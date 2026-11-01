@@ -90,28 +90,66 @@ def get_binding(cx, project:str, agent:str) -> dict:
         raise RuntimeError_(f'Agent {agent} is not registered under project {project}; refusing cross-project control')
     return dict(row)
 
+def verified_live_agent(cfg: dict, binding: dict) -> dict:
+    """Fail closed unless structured live identity matches the local binding.
+
+    A Herdr agent name is a reusable alias, not a durable session capability.
+    Require manual reconciliation after pane movement or agent replacement.
+    """
+    live = herdr(cfg, ['agent', 'get', binding['name']])
+    if not isinstance(live, dict):
+        raise RuntimeError_('Unstructured Herdr agent identity; refusing access')
+    result = live.get('result')
+    agent = result.get('agent') if isinstance(result, dict) else None
+    if not isinstance(agent, dict):
+        raise RuntimeError_('Herdr agent get omitted result.agent; refusing access')
+    if agent.get('pane_id') != binding['pane_id']:
+        raise RuntimeError_('Live Herdr pane differs from registered pane; manual rebind required')
+    # These fields are optional in older Herdr builds. Verify them when present.
+    if agent.get('name') is not None and agent['name'] != binding['name']:
+        raise RuntimeError_('Live Herdr agent name differs from registered name')
+    if agent.get('workspace_id') is not None and agent['workspace_id'] != binding['workspace_id']:
+        raise RuntimeError_('Live Herdr workspace differs from registered workspace')
+    return agent
+
+
 def prompt_agent(cfg,cx, *, project:str,agent:str,text:str,yes:bool=False,wait:bool=False) -> dict | str:
     if not yes:
         raise ConfigError('Prompting live agent requires --yes')
     binding=get_binding(cx,project,agent)
     if not text.strip() or len(text)>16000:
         raise ConfigError('Prompt length must be 1–16000')
-    # Defense in depth: verify the Herdr live alias still points to bound pane.
-    live=herdr(cfg,['agent','get',agent])
-    if not isinstance(live, dict):
-        raise RuntimeError_('Herdr agent get did not return structured JSON; refusing unsafe prompt')
-    raw=json.dumps(live)
-    if binding['pane_id'] not in raw:
-        raise RuntimeError_('Live Herdr agent does not match registered pane; rebind manually')
-    argv=['agent','prompt',agent,text]
-    if wait: argv += ['--wait','--until','done','--until','blocked','--timeout','120000']
-    return herdr(cfg,argv,timeout=130 if wait else 35)
+    live=verified_live_agent(cfg,binding)
+    # Do not enqueue into working, blocked or unknown agents. Inspect them first.
+    # Older builds may omit status, so actual schema still requires live testing.
+    state = live.get('agent_status')
+    if state is None:
+        state = live.get('status', live.get('state'))
+    if state is not None and state not in ('idle','done'):
+        raise RuntimeError_(f'Agent is not ready for a new prompt (state={state!r})')
+    # Pane target avoids alias reassignment redirecting input to a different pane.
+    argv=['agent','prompt',binding['pane_id'],text]
+    if wait: argv += ['--wait','--until','idle','--until','done','--until','blocked','--timeout','120000']
+    try:
+        output=herdr(cfg,argv,timeout=130 if wait else 35)
+    except RuntimeError_ as exc:
+        # Timeout/stall is delivery-ambiguous. Never auto-retry.
+        raise RuntimeError_(f'{exc}; prompt delivery uncertain — inspect the agent before any retry') from exc
+    try:
+        verified_live_agent(cfg,binding)
+    except RuntimeError_ as exc:
+        raise RuntimeError_(f'{exc}; prompt may already have been delivered — do not blindly retry') from exc
+    return output
+
 
 def read_agent(cfg,cx, *, project:str,agent:str,lines:int=60)->dict:
-    get_binding(cx,project,agent)
+    binding=get_binding(cx,project,agent)
     if not 1<=lines<=300:
         raise ConfigError('Read limit must be 1–300 lines')
-    data=herdr(cfg,['agent','read',agent,'--source','recent-unwrapped','--lines',str(lines)])
+    verified_live_agent(cfg,binding)
+    data=herdr(cfg,['agent','read',binding['pane_id'],'--source','recent-unwrapped','--lines',str(lines)])
+    # If the occupant or alias changes mid-read, never release captured output.
+    verified_live_agent(cfg,binding)
     return {'project':project,'agent':agent,'output':data if isinstance(data,str) else json.dumps(data)}
 
 def notify(cfg:dict,project:str,text:str,*,yes:bool=False)->str:

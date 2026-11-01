@@ -10,7 +10,7 @@
 - SQLite persistent global/project memory; FTS5 search, typed graph edges, evidence pointers, memory retire, bounded context packages and per-project task checkpoints.
 - OpenClaw Discord routing/permission template, Discord channel topology, credential inventory, token-budget policy and outbound message adapter.
 - Shared skills for Herdr control, memory recall, handoff, scientific review and worktrees.
-- Master implementer prompt, deployment/security/recovery runbooks and 24 passing offline tests (authoring environment; run `scripts/selftest.sh` to re-check).
+- Master implementer prompt, deployment/security/recovery runbooks and 41 passing offline tests in the authoring copy; additional branch regression cases require rerun on the target host (`scripts/selftest.sh`).
 
 ## Not yet implemented/verified
 - No live Herdr server or coding CLIs are connected to this package in the authoring environment.
@@ -70,3 +70,7 @@ Never commit secrets. A memory DB is not an access-control boundary against host
 **First read:** `docs/GITHUB_SETUP.md`, `docs/ISSUES.md`, `docs/DEPLOYMENT.md`, then `MASTER_AGENT_PROMPT.md`.
 
 **Discord and token operations:** `docs/DISCORD_DESIGN.md` and `docs/TOKEN_POLICY.md`. Channel creation, task-thread metadata resolution, provider token accounting and approval workflow must still be validated or implemented on the host; these documents do not claim live integration.
+
+### Security patch review
+
+See [docs/REMEDIATION_2026-11-01.md](docs/REMEDIATION_2026-11-01.md) for the Herdr identity, read-race and graph-memory fixes; live deployment remains unverified.
