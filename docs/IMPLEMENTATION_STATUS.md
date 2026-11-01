@@ -17,3 +17,7 @@
 | Discord thread parent routing | PARTIAL | Local function requires trusted parent metadata; offline tests | Build/validate OpenClaw metadata adapter on server; no unverified parent dispatch |
 
 The implementing agent must replace these placeholder statuses with evidence after verification. Never mark live gates PASS based on offline mocks.
+
+### Security remediation branch (2026-11-01)
+
+A dedicated branch fixes four reproduced runtime/memory correctness defects and adds adversarial regression tests. The authoring copy passed **41 offline tests**, but this **does not verify real Herdr compatibility** or deployed Discord permissions. See [REMEDIATION_2026-11-01.md](REMEDIATION_2026-11-01.md). Pending: rerun full PR suite, independent Opus review, exact live Herdr API schema, safe owner-approved agent handoff and gateway integration. P1/P3/P4 remain **BLOCKED**.
