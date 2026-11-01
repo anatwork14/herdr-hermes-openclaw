@@ -67,6 +67,6 @@ One private Discord server, one channel per project, one Herdr workspace per pro
 ### Safety
 Never commit secrets. A memory DB is not an access-control boundary against hostile OS users. Keep OpenClaw host exec guarded and validate permissions before allowing Discord to dispatch live agents. See `docs/SECURITY.md`.
 
-**First read:** `docs/GITHUB_SETUP.md`, `docs/DEPLOYMENT.md`, then `MASTER_AGENT_PROMPT.md`.
+**First read:** `docs/GITHUB_SETUP.md`, `docs/ISSUES.md`, `docs/DEPLOYMENT.md`, then `MASTER_AGENT_PROMPT.md`.
 
 **Discord and token operations:** `docs/DISCORD_DESIGN.md` and `docs/TOKEN_POLICY.md`. Channel creation, task-thread metadata resolution, provider token accounting and approval workflow must still be validated or implemented on the host; these documents do not claim live integration.
