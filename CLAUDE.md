@@ -1,0 +1,1 @@
+Follow `AGENTS.md` and `MASTER_AGENT_PROMPT.md`. Work on your own branch/worktree. Separate verified runtime facts from assumptions. Do not silently change authentication, permissions, or deployed services.

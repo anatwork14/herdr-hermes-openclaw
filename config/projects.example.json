@@ -1,0 +1,18 @@
+{
+  "state_dir": "./.state",
+  "worktree_root": "./.worktrees",
+  "default_memory_budget": 1600,
+  "herdr_binary": "herdr",
+  "openclaw_binary": "openclaw",
+  "allowed_kinds": ["codex", "claude", "agy", "hermes", "gemini"],
+  "projects": {
+    "starlight-tempo": {
+      "repo": "/srv/repos/starlight-tempo",
+      "discord_channel_id": ""
+    },
+    "federated-learning-iot": {
+      "repo": "/srv/repos/federated-learning-in-iot",
+      "discord_channel_id": ""
+    }
+  }
+}

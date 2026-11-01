@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.state/
+.worktrees/
+config/projects.json
+.env
+*.secret
+
+config/discord_layout.json
+config/token_policy.json

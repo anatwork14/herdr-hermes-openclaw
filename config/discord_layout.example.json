@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "bot_name": "ResearchOps",
+  "guild_id": "",
+  "owner_user_ids": [],
+  "control_channels": {
+    "agent-control": {
+      "channel_id": "",
+      "purpose": "Owner commands, project and agent status, no unscoped code mutation",
+      "inbound": true,
+      "require_mention": true,
+      "restricted": true
+    },
+    "approvals": {
+      "channel_id": "",
+      "purpose": "Owner-only approval requests; no implied automatic command authorization",
+      "inbound": false,
+      "restricted": true
+    },
+    "alerts": {
+      "channel_id": "",
+      "purpose": "Important errors, blocked agents and review gates; outbound only",
+      "inbound": false,
+      "restricted": true
+    },
+    "system-status": {
+      "channel_id": "",
+      "purpose": "Optional health and resource digests; outbound only",
+      "inbound": false,
+      "restricted": true,
+      "optional": true
+    }
+  },
+  "project_channel_defaults": {
+    "require_mention": true,
+    "one_project_per_channel": true,
+    "task_threads": true,
+    "thread_name_pattern": "<PROJECT>-<TASK-ID> | <short goal>",
+    "notify_only": ["blocked", "failed", "review-ready", "approval-needed", "done"]
+  },
+  "permissions": {
+    "bot": ["View Channels", "Send Messages", "Read Message History", "Send Messages in Threads", "Embed Links"],
+    "prohibited": ["Administrator", "Manage Roles", "Manage Server", "Manage Webhooks"],
+    "control_inbound": "owner-only",
+    "project_inbound": "owner-only initially"
+  }
+}

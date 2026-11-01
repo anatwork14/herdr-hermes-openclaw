@@ -1,0 +1,39 @@
+// REFERENCE FRAGMENT: merge with backup using `openclaw config patch --file ... --dry-run`.
+// Replace placeholder IDs with REAL Discord IDs; do not submit template as-is.
+// One Discord application/token handles all project channels. Herdr CLI agents do NOT
+// use the Discord token. Use env secret references, NEVER paste a credential into Git.
+{
+  channels: {
+    discord: {
+      enabled: true,
+      token: { source: "env", provider: "default", id: "DISCORD_BOT_TOKEN" },
+      groupPolicy: "allowlist",
+      dmPolicy: "allowlist",
+      allowFrom: ["YOUR_DISCORD_USER_ID"],
+      allowBots: false,
+      historyLimit: 6, // reduce passive Discord-history context; tune after measuring
+      thread: { inheritParent: false },
+      execApprovals: {
+        enabled: true,
+        approvers: ["YOUR_DISCORD_USER_ID"],
+        target: "dm" // native exec-approval cards; project #approvals is status only
+      },
+      guilds: {
+        "YOUR_GUILD_ID": {
+          requireMention: true,
+          users: ["YOUR_DISCORD_USER_ID"],
+          channels: {
+            "AGENT_CONTROL_CHANNEL_ID": { enabled: true, requireMention: true },
+            "STARLIGHT_CHANNEL_ID": { enabled: true, requireMention: true },
+            "FL_IOT_CHANNEL_ID": { enabled: true, requireMention: true }
+            // Do not include #alerts/#approvals/#system-status as inbound channels.
+            // Outbound delivery must be separately verified on the real bot account.
+          }
+        }
+      }
+    }
+  },
+  tools: { exec: { mode: "ask" } },
+  skills: { load: { extraDirs: ["/ABS/PATH/herdr-agent-workspace/skills/shared"] } },
+  messages: { responseUsage: { default: "off", discord: "tokens" } }
+}
