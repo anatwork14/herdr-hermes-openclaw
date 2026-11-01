@@ -57,10 +57,14 @@ def build_parser():
     a=ms.add_parser('search')
     a.add_argument('--project'); a.add_argument('--global-only',action='store_true')
     a.add_argument('query'); a.add_argument('--limit',type=int,default=8)
+    a.add_argument('--status',choices=['active','superseded','retracted','all'],default='active')
+    a.add_argument('--include-retired',action='store_true')
     a=ms.add_parser('link')
     a.add_argument('--project'); a.add_argument('source'); a.add_argument('relation'); a.add_argument('target')
     a=ms.add_parser('graph')
     a.add_argument('--project'); a.add_argument('id'); a.add_argument('--hops',type=int,default=2)
+    a.add_argument('--status',choices=['active','superseded','retracted','all'],default='active')
+    a.add_argument('--include-retired',action='store_true')
     a=ms.add_parser('context')
     a.add_argument('--project',required=True); a.add_argument('query'); a.add_argument('--budget',type=int)
     a=ms.add_parser('list')
@@ -126,20 +130,21 @@ def main(argv=None):
                      subject=args.subject,content=args.content,evidence=args.evidence)})
             elif args.operation=='retire':
                 if not args.yes: raise ConfigError('Retiring memory requires --yes')
-                row=cx.execute('SELECT * FROM memories WHERE id=?',(args.id,)).fetchone()
-                if not row or not mem.accessible(row,args.project):
-                    raise ConfigError('Memory is not accessible')
-                if row['scope']=='global' and args.project is not None:
-                    raise ConfigError('Global retirement requires global-only operator context')
-                with cx: cx.execute('UPDATE memories SET status=?, updated_at=strftime("%s","now") WHERE id=?',(args.status,args.id))
+                try:
+                    mem.retire(cx, args.id, args.status, project=args.project)
+                except mem.MemoryError as exc:
+                    raise ConfigError(str(exc)) from exc
                 output({'ok':True,'id':args.id,'status':args.status})
             elif args.operation=='search':
-                output(mem.search(cx,args.query,project=args.project,limit=args.limit,global_only=args.global_only))
+                output(mem.search(cx,args.query,project=args.project,limit=args.limit,
+                                  global_only=args.global_only,status=args.status,
+                                  include_retired=args.include_retired))
             elif args.operation=='link':
                 mem.link(cx,args.source,args.relation,args.target,args.project)
                 output({'ok':True})
             elif args.operation=='graph':
-                output(mem.graph(cx,args.id,project=args.project,hops=args.hops))
+                output(mem.graph(cx,args.id,project=args.project,hops=args.hops,
+                                 status=args.status,include_retired=args.include_retired))
             elif args.operation=='context':
                 output(mem.context(cx,project=args.project,query=args.query,budget=args.budget or cfg['default_memory_budget']))
             elif args.operation=='list':
