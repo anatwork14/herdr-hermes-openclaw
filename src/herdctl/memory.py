@@ -114,12 +114,20 @@ def search(cx: sqlite3.Connection, query: str, *, project: str | None, limit: in
     if not tokens:
         return []
     fts = ' OR '.join('"' + t.replace('"', '') + '"' for t in tokens[:12])
-    rows = cx.execute("""SELECT m.*, bm25(memory_fts) AS rank FROM memory_fts
+    # Filter scope in SQL before FTS rank/LIMIT. Python post-filtering can
+    # exclude valid global records when project hits fill the top results.
+    if global_only or project is None:
+        scope_predicate = "m.scope='global'"
+        params = (fts, max(1, min(limit, 50)))
+    else:
+        scope_predicate = "(m.scope='global' OR (m.scope='project' AND m.project=?))"
+        params = (fts, project, max(1, min(limit, 50)))
+    rows = cx.execute(f"""SELECT m.*, bm25(memory_fts) AS rank FROM memory_fts
       JOIN memories m ON m.rowid = memory_fts.rowid
       WHERE memory_fts MATCH ? AND m.status='active'
-      AND (m.scope='global' OR (m.scope='project' AND m.project=?))
-      ORDER BY rank LIMIT ?""", (fts, project, max(1, min(limit, 50)))).fetchall()
-    return [dict(r) for r in rows if accessible(r, project, global_only=global_only)]
+      AND {scope_predicate}
+      ORDER BY rank LIMIT ?""", params).fetchall()
+    return [dict(r) for r in rows]
 
 def link(cx: sqlite3.Connection, source: str, relation: str, target: str, project: str | None):
     if relation not in RELATIONS:
@@ -142,8 +150,8 @@ def graph(cx: sqlite3.Connection, start: str, *, project: str | None, hops: int=
     if hops < 0 or hops > 3:
         raise MemoryError("Traversal limited to 0–3 hops")
     root = cx.execute("SELECT * FROM memories WHERE id=?", (start,)).fetchone()
-    if not root or not accessible(root, project):
-        raise MemoryError("Memory is not accessible")
+    if not root or not accessible(root, project) or root['status'] != 'active':
+        raise MemoryError("Memory is not accessible or active")
     visited, q, edges = {start:dict(root)}, deque([(start,0)]), []
     while q:
         node, depth = q.popleft()
@@ -151,7 +159,7 @@ def graph(cx: sqlite3.Connection, start: str, *, project: str | None, hops: int=
         for edge in cx.execute("SELECT * FROM edges WHERE source=? OR target=?", (node,node)).fetchall():
             nxt = edge['target'] if edge['source']==node else edge['source']
             row = cx.execute("SELECT * FROM memories WHERE id=?", (nxt,)).fetchone()
-            if not row or not accessible(row, project) or row['status'] == 'retracted': continue
+            if not row or not accessible(row, project) or row['status'] != 'active': continue
             edges.append(dict(edge))
             if nxt not in visited:
                 visited[nxt]=dict(row)
