@@ -5,7 +5,7 @@
 
 | Gate | Status | Evidence | Unresolved |
 |---|---|---|---|
-| P0 offline control-plane | PASS (authoring environment) | 24 unittest cases green; Python 3.13; local CLI verified on 2026-11-01 | Re-run on target server |
+| P0 offline control-plane | PASS (authoring environment) | 41 unittest cases green in the authoring copy; additional PR regression suite pending branch execution on host; Python 3.13 | Re-run on target server |
 | P1 Herdr + agent smoke test | BLOCKED | Requires actual Herdr server and authenticated CLIs | Host access |
 | P2 Memory + shared skills | PARTIAL | SQLite implementation exists; CLI + skill discovery require verification | Host config |
 | P3 Discord/OpenClaw | BLOCKED | Integration instructions provided | Bot token, IDs, gateway |
