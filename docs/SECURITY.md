@@ -10,7 +10,7 @@
 ## Project isolation
 - The config maps projects to trusted paths and immutable Discord channel IDs.
 - Project/private memories are filtered by SQL before return. A global memory record does not inherit project content. Edges across projects or global/project scopes are disallowed.
-- Agent control is restricted to named bindings registered for a project. The runtime checks Herdr's live pane for a matching name before prompting.
+- Agent control is restricted to named bindings registered for a project. The runtime now validates exact structured Herdr pane identity and any reported name/workspace. It reads and prompts by pane ID, revalidating after a terminal read. This is NOT atomic across concurrent Herdr operations and must be placed behind an authenticated, serialized Discord adapter.
 - This is **application-level** isolation, not an OS sandbox. If multiple mutually untrusted parties share a Unix user, use separate OS users/containers and permission boundaries.
 
 ## Code and credentials
@@ -26,3 +26,7 @@
 - No automatic memory extraction, temporal graph re-ranking, vector search, or cross-provider external memory sync.
 - State database is not encrypted at rest. Store only non-secret records and restrict file permissions.
 - A network/auth failure during worktree creation + Herdr startup may leave an orphan worktree; recovery must be manual and nondestructive.
+
+## Code review remediation
+
+See [REMEDIATION_2026-11-01.md](REMEDIATION_2026-11-01.md). Prompt timeouts and stalls are delivery-ambiguous; never blind-retry. Retired graph nodes are excluded from normal traversal and global-only FTS filtering occurs before ranking/LIMIT. P1/P3/P4 remain live-BLOCKED.
