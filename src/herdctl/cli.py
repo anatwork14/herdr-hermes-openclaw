@@ -27,6 +27,15 @@ def build_parser():
     a=sub.add_parser('project-for-channel')
     a.add_argument('channel_id',help='Trusted Discord channel/thread ID from gateway metadata')
     a.add_argument('--parent-channel-id',help='Trusted parent ID from Discord thread metadata (never message content)')
+    gw=sub.add_parser('discord-gateway',help='Process trusted inbound Discord gateway message')
+    gw.add_argument('--payload',help='JSON string containing message payload')
+    gw.add_argument('--channel-id')
+    gw.add_argument('--parent-channel-id')
+    gw.add_argument('--guild-id')
+    gw.add_argument('--author-id')
+    gw.add_argument('--message-id')
+    gw.add_argument('--content')
+    gw.add_argument('--author-is-bot',action='store_true')
     a=sub.add_parser('agents')
     a.add_argument('--project')
     a=sub.add_parser('launch')
@@ -109,6 +118,27 @@ def main(argv=None):
         elif args.domain=='project-for-channel':
             from .discord_design import project_for_channel
             output(project_for_channel(cfg,args.channel_id,args.parent_channel_id))
+        elif args.domain=='discord-gateway':
+            from .discord_gateway import DiscordGateway
+            gateway=DiscordGateway(root=root,cfg=cfg,cx=cx)
+            if args.payload:
+                payload=json.loads(args.payload)
+            else:
+                layout=gateway.layout
+                owners=layout.get('owner_user_ids') or []
+                payload={
+                    'message_id':args.message_id or '1566470000000000001',
+                    'guild_id':args.guild_id or layout.get('guild_id'),
+                    'channel_id':args.channel_id,
+                    'parent_channel_id':args.parent_channel_id,
+                    'author_id':args.author_id or (owners[0] if owners else None),
+                    'content':args.content or '',
+                    'author_is_bot':args.author_is_bot,
+                }
+            res=gateway.handle_message(payload)
+            output(res)
+            if not res.get('ok'):
+                return 1
         elif args.domain=='agents':
             rows=cx.execute('SELECT * FROM bindings WHERE project=? ORDER BY name',(args.project,)).fetchall() if args.project else cx.execute('SELECT * FROM bindings ORDER BY project,name').fetchall()
             output([dict(x) for x in rows])
