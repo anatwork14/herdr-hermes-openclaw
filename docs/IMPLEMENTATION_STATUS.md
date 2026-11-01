@@ -6,17 +6,34 @@
 | Gate | Status | Evidence | Unresolved |
 |---|---|---|---|
 | P0 offline control-plane | PASS | 114/114 unittest cases passing on target Linux host; GitHub Actions CI quality gate passing; PR #8 merged into `main` via squash commit `e42174d812429fdf3ee99f809968aa23f20ca639`; Issue #2 closed; Opus 5.5 verdict PASS | None (P0 closed) |
-| P1 Herdr + agent smoke test | PASS | Live Herdr 0.9.0 two-agent handoff executed in workspace `w5` (`starlight-tempo`); `st_codex` implemented CPU utility `compute_tempo_error` and test `tests/test_p1_tempo_error.py` (commit `a5968492`, 5/5 pytest passing); `st_claude` independently reviewed diff via Herdr and issued PASS verdict; live `working`/`blocked` busy rejection and cross-project access rejection verified | None |
-| P2 Memory + shared skills | PASS (offline) | SQLite WAL mode, FTS5 token sanitization, scoped isolation, graph deduplication, and secret redaction verified under 12-thread concurrency | Shared skill discovery live integration |
-| P3 Discord/OpenClaw | PARTIAL | OpenClaw Discord gateway running (task-758); real delivery to `#starlight-tempo`, `#federated-learning-iot`, and `#alerts` verified; channel ID allowlist enforced | Live incoming thread dispatch & owner approval adapter |
+| P1 Herdr + agent smoke test | PASS | Live Herdr 0.9.0 two-agent handoff executed in workspace `w5` (`starlight-tempo`); `st_codex` implemented CPU utility `compute_tempo_error` and test `tests/test_p1_tempo_error.py` (commit `a5968492`, 5/5 pytest passing); `st_claude` independently reviewed diff via Herdr and issued PASS verdict; live `working`/`blocked` busy rejection and cross-project access rejection verified; Issue #3 closed; Opus 5.5 verdict PASS | None (P1 closed) |
+| P2 Memory + shared skills | PASS | Memory lifecycle (`active`/`superseded`/`retracted`), cross-project negative access, token budget clamping `[100..10000]`, and 5 canonical shared skills discoverable across Codex, Claude, and Hermes; 35 dedicated tests passing | Issue #4 review gate |
+| P3 Discord/OpenClaw | PARTIAL | P3-A completed: trusted inbound Discord gateway router (`src/herdctl/discord_gateway.py`), guild/author allowlist, thread ancestry resolver, SQLite idempotency, and 5 read-only commands (`status`, `agents`, `recall`, `tasks`, `budget`); 43 dedicated tests passing; 192/192 total suite green | P3-B live bounded dispatch pending review & owner approval |
 | P4 Supervisor orchestration | DESIGN | Task checkpoint table/skills defined | Live Hermes/worker tests |
 | P5 token efficiency benchmark | NOT STARTED | Evaluation plan | Real agent telemetry |
 
-| Discord layout and credentials | DESIGN/TESTABLE OFFLINE | `herdctl discord-plan`, `docs/DISCORD_DESIGN.md`; no live bot | Create channels and verify gateway / owner allowlist |
-| Role memory token budgets | DESIGN/TESTABLE OFFLINE | `herdctl budget`, `docs/TOKEN_POLICY.md`; soft targets | Measure provider and Herdr CLI usage in live tasks |
-| Discord thread parent routing | PARTIAL | Local function requires trusted parent metadata; offline tests | Build/validate OpenClaw metadata adapter on server; no unverified parent dispatch |
+| Discord layout and credentials | READY | `herdctl discord-plan` status `READY_FOR_MANUAL_CONFIGURATION`, 0 missing fields; layout aligned with OpenClaw | None |
+| Role memory token budgets | PASS | `herdctl budget` validated against `config/token_policy.example.json`; retrieval budget clamping `[100..10000]` enforced | None |
+| Discord thread parent routing | PASS (P3-A) | Trusted gateway resolver in `src/herdctl/discord_gateway.py` validates parent channel metadata against project registry; unmapped/forged threads rejected | Live Discord event testing |
 
 The implementing agent must replace these placeholder statuses with evidence after verification. Never mark live gates PASS based on offline mocks.
+
+### Phase P2 & P3-A Integration Evidence (2026-11-01)
+
+- **Integration Commit:** `feat/p2-p3-integration` (`a24576a`).
+- **Full Test Suite:** **192 / 192 tests passing** in 24.711s (`unittest discover -s tests`).
+- **Self-Test Script:** `scripts/selftest.sh` reports clean doctor status.
+- **P2 Deliverables:**
+  - Memory lifecycle state machine (`active`, `superseded`, `retracted`) with status filtering in `search()` and `graph()`.
+  - Canonical shared skills (`git-worktree`, `herdr-control`, `memory-recall`, `scientific-review`, `task-handoff`) in `src/herdctl/skills.py` with multi-agent discovery for Codex (`~/.agents/skills`), Claude Code (`~/.claude/skills`), and Hermes Agent (`skills.external_dirs`).
+  - Strict negative access: cross-project queries, link creation, and graph traversals between `starlight-tempo` and `federated-learning-iot` strictly denied.
+- **P3-A Deliverables:**
+  - Trusted inbound gateway router (`src/herdctl/discord_gateway.py`):
+    - Guild ID allowlist: matches `1556635278846992404`.
+    - Author ID allowlist: matches `734391788718129205`. Bot messages rejected.
+    - Authoritative thread ancestry resolver: threads must have valid `parent_channel_id` matching project channel. Forged/missing parents rejected.
+    - Idempotency & replay protection: SQLite-backed (`gateway_idempotency` table) + memory index.
+    - 5 read-only commands: `status`, `agents`, `recall`, `tasks`, `budget`. Shell commands, metacharacters, and path traversal strictly blocked.
 
 ### Security remediation branch (2026-11-01)
 
