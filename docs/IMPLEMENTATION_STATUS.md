@@ -5,7 +5,7 @@
 
 | Gate | Status | Evidence | Unresolved |
 |---|---|---|---|
-| P0 offline control-plane | PASS | 112/112 unittest cases passing on target Linux host (Python 3.12.14); comprehensive concurrency, FTS5 injection, secret redaction, and Herdr 0.9.0 schema regression suites green | Independent Opus review pending |
+| P0 offline control-plane | PASS | 112/112 unittest cases passing on target Linux host (Python 3.12.14); comprehensive concurrency, FTS5 injection, secret redaction, and Herdr 0.9.0 schema regression suites green; Opus 5.5 verdict PASS WITH CONDITIONS | Independent Opus review complete |
 | P1 Herdr + agent smoke test | PARTIAL | Herdr 0.9.0 daemon running (`/mnt/ssd/genos2/.config/herdr/herdr.sock`); `st_codex` and `st_claude` workspaces created; offline contract verified; live prompt/read handoff offline tested | Owner-approved live execution tests |
 | P2 Memory + shared skills | PASS (offline) | SQLite WAL mode, FTS5 token sanitization, scoped isolation, graph deduplication, and secret redaction verified under 12-thread concurrency | Shared skill discovery live integration |
 | P3 Discord/OpenClaw | PARTIAL | OpenClaw Discord gateway running (task-758); real delivery to `#starlight-tempo`, `#federated-learning-iot`, and `#alerts` verified; channel ID allowlist enforced | Live incoming thread dispatch & owner approval adapter |
@@ -20,4 +20,4 @@ The implementing agent must replace these placeholder statuses with evidence aft
 
 ### Security remediation branch (2026-11-01)
 
-Branch `fix/agent-binding-and-memory-isolation` (PR #8, commit `381f20b316d8ab095b33b025e7f2bcce42c9cba0`) fixes four reproduced runtime/memory defects (H1, H2, M1, M2), resolves the live Herdr 0.9.0 `agent_status` schema mismatch, hardens PKCS#8/PGP secret redaction, deduplicates graph BFS traversals, and adds two concurrency/regression suites (`tests/test_memory_concurrency.py` and `tests/test_runtime_concurrency.py`). All **112 tests pass offline on target host** in 16.092s (`scripts/selftest.sh` verified clean). Review packet dispatched to Opus 5.5 Principal Reviewer. Production merge remains gated on independent review approval and owner authorization.
+Branch `fix/agent-binding-and-memory-isolation` (PR #8, commits `381f20b`, `7efc820`) fixes four reproduced runtime/memory defects (H1, H2, M1, M2), resolves the live Herdr 0.9.0 `agent_status` schema mismatch, hardens PKCS#8/PGP secret redaction, deduplicates graph BFS traversals, and adds two concurrency/regression suites (`tests/test_memory_concurrency.py` and `tests/test_runtime_concurrency.py`). All **112 tests pass offline on target host** in 16.092s (`scripts/selftest.sh` verified clean). **Opus 5.5 Independent Review verdict: PASS WITH CONDITIONS** (re-review required: NO). Ready for owner merge approval into `main`.
