@@ -1,6 +1,6 @@
 # Implementation status
 
-**GitHub publication:** Source is published on a feature branch for review. No live server or Discord configuration has been applied by ChatGPT. The repository PR and branch status must be verified independently after publishing.
+**GitHub publication:** Source was merged into `main` through [PR #1](https://github.com/anatwork14/herdr-hermes-openclaw/pull/1) on 2026-11-01. Six operational issues (#2–#7) track the remaining host-side work. No live server or Discord configuration has been applied.
 
 
 | Gate | Status | Evidence | Unresolved |
