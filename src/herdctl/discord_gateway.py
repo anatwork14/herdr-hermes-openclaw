@@ -281,9 +281,9 @@ def resolve_channel_ancestry(
     # 1. Check control channels
     control_channels = layout.get("control_channels", {})
     agent_control = control_channels.get("agent-control", {})
-    agent_control_id = str(agent_control.get("channel_id") or "1566465715828031582").strip()
+    agent_control_id = str(agent_control.get("channel_id") or "").strip()
 
-    if cid == agent_control_id:
+    if agent_control_id and cid == agent_control_id:
         if pid is not None:
             raise GatewayRoutingError("Parent ID supplied for a root control channel")
         if not agent_control.get("inbound", True):
@@ -374,7 +374,7 @@ def handle_status(
     for name, p_info in cfg.get("projects", {}).items():
         try:
             repo_path = resolve_path(root, p_info.get("repo", ""))
-            repo_exists = repo_path.is_dir()
+            repo_exists = (repo_path / ".git").exists() or (repo_path / ".git").is_file()
         except Exception:
             repo_exists = False
         projects_summary[name] = {
