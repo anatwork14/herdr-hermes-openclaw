@@ -1,0 +1,38 @@
+name: Test Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+  pull_request:
+    branches:
+      - main
+      - 'fix/**'
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} Tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Bootstrap environment
+        run: bash scripts/bootstrap.sh
+
+      - name: Bytecode compile verification
+        run: .venv/bin/python -m compileall -q src tests
+
+      - name: Run complete test suite
+        run: .venv/bin/python -m unittest discover -s tests -v

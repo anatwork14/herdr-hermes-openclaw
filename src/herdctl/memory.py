@@ -192,6 +192,7 @@ def task_upsert(cx:sqlite3.Connection, task_id:str, project:str, title:str, stat
     if status not in {'queued','working','blocked','review','done','failed'}:
         raise MemoryError('Invalid task status')
     safe_text(title)
+    if agent: safe_text(agent)
     if evidence: safe_text(evidence)
     with cx:
         cx.execute("""INSERT INTO task_state(id,project,title,status,agent,evidence,updated_at)

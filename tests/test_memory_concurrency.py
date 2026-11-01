@@ -493,6 +493,41 @@ class TestCrossProjectIsolation(BaseMemoryTest):
         self.assertEqual(row["title"], "Alpha task")
         self.assertEqual(row["status"], "queued")
 
+    def test_graph_hop_boundaries_and_cycles(self):
+        """Hops must be clamped to [0..3]; cycles and self-edges must be handled properly."""
+        m1 = self.add_mem(project="proj-alpha", subject="cycle-1", content="node 1")
+        m2 = self.add_mem(project="proj-alpha", subject="cycle-2", content="node 2")
+        m3 = self.add_mem(project="proj-alpha", subject="cycle-3", content="node 3")
+
+        # Hop boundary assertions
+        with self.assertRaises(m.MemoryError):
+            m.graph(self.cx, m1, project="proj-alpha", hops=-1)
+        with self.assertRaises(m.MemoryError):
+            m.graph(self.cx, m1, project="proj-alpha", hops=4)
+
+        # hops = 0 returns only root and 0 edges
+        g0 = m.graph(self.cx, m1, project="proj-alpha", hops=0)
+        self.assertEqual(len(g0["nodes"]), 1)
+        self.assertEqual(g0["edges"], [])
+
+        # Link in a cycle: m1 -> m2 -> m3 -> m1
+        m.link(self.cx, m1, "DEPENDS_ON", m2, "proj-alpha")
+        m.link(self.cx, m2, "DEPENDS_ON", m3, "proj-alpha")
+        m.link(self.cx, m3, "DEPENDS_ON", m1, "proj-alpha")
+
+        # Traversal terminates cleanly without loop; deduplicates seen edges
+        g_cycle = m.graph(self.cx, m1, project="proj-alpha", hops=3)
+        self.assertEqual(len(g_cycle["nodes"]), 3)
+        self.assertEqual(len(g_cycle["edges"]), 3)
+
+        # Self-edge must be rejected
+        with self.assertRaises(m.MemoryError):
+            m.link(self.cx, m1, "DEPENDS_ON", m1, "proj-alpha")
+
+        # Unsupported relationship rejected
+        with self.assertRaises(m.MemoryError):
+            m.link(self.cx, m1, "INVALID_RELATION", m2, "proj-alpha")
+
 
 class TestMemoryStatusLifecycle(BaseMemoryTest):
     """Memory status lifecycle (active -> superseded -> retracted) exclusion rules."""
@@ -691,6 +726,28 @@ class TestLimitAndBudgetClamping(BaseMemoryTest):
         with self.assertRaises(m.MemoryError):
             self.add_mem(project="proj-clamp", subject="12k1", content=too_large)
 
+    def test_scope_and_evidence_boundaries(self):
+        """Scope/project mismatch and empty evidence must be rejected."""
+        # Global with project
+        with self.assertRaises(m.MemoryError):
+            m.add(self.cx, scope="global", project="some-proj", type="fact",
+                  subject="s", content="c", evidence="e")
+
+        # Project without project
+        with self.assertRaises(m.MemoryError):
+            m.add(self.cx, scope="project", project=None, type="fact",
+                  subject="s", content="c", evidence="e")
+
+        # Invalid scope
+        with self.assertRaises(m.MemoryError):
+            m.add(self.cx, scope="user", project=None, type="fact",
+                  subject="s", content="c", evidence="e")
+
+        # Whitespace-only evidence
+        with self.assertRaises(m.MemoryError):
+            m.add(self.cx, scope="global", project=None, type="fact",
+                  subject="s", content="c", evidence="   \t  \n  ")
+
 
 class TestSecretRedactionComprehensive(BaseMemoryTest):
     """Secret redaction across all memory types and fields (PKCS#8, RSA, EC, OpenSSH, tokens)."""
@@ -706,6 +763,8 @@ class TestSecretRedactionComprehensive(BaseMemoryTest):
         ("ec", "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEI...\n-----END EC PRIVATE KEY-----"),
         # OpenSSH
         ("openssh", "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAA...\n-----END OPENSSH PRIVATE KEY-----"),
+        # DSA
+        ("dsa", "-----BEGIN DSA PRIVATE KEY-----\nMIIBvAIBAAKCAQEA0r1b...\n-----END DSA PRIVATE KEY-----"),
         # PGP
         ("pgp", "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: BCPG\n...\n-----END PGP PRIVATE KEY BLOCK-----"),
         # API Keys
@@ -766,16 +825,21 @@ class TestSecretRedactionComprehensive(BaseMemoryTest):
             self.add_mem(project="proj-sec", subject="safe subject", content="safe content", evidence=pkcs8)
 
     def test_secrets_rejected_in_task_state_fields(self):
-        """Verify secret rejection in title and evidence fields of task_upsert()."""
+        """Verify secret rejection in title, agent, and evidence fields of task_upsert()."""
         token = "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
 
         # Leak in title
         with self.assertRaises(m.MemoryError):
             m.task_upsert(self.cx, "sec-task-1", "proj-sec", title=token, status="queued")
 
-        # Leak in evidence
+        # Leak in agent
         with self.assertRaises(m.MemoryError):
             m.task_upsert(self.cx, "sec-task-2", "proj-sec", title="Safe title",
+                          status="queued", agent=token)
+
+        # Leak in evidence
+        with self.assertRaises(m.MemoryError):
+            m.task_upsert(self.cx, "sec-task-3", "proj-sec", title="Safe title",
                           status="queued", evidence=token)
 
 
