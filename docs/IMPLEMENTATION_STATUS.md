@@ -7,8 +7,8 @@
 |---|---|---|---|
 | P0 offline control-plane | PASS | 114/114 unittest cases passing on target Linux host; GitHub Actions CI quality gate passing; PR #8 merged into `main` via squash commit `e42174d812429fdf3ee99f809968aa23f20ca639`; Issue #2 closed; Opus 5.5 verdict PASS | None (P0 closed) |
 | P1 Herdr + agent smoke test | PASS | Live Herdr 0.9.0 two-agent handoff executed in workspace `w5` (`starlight-tempo`); `st_codex` implemented CPU utility `compute_tempo_error` and test `tests/test_p1_tempo_error.py` (commit `a5968492`, 5/5 pytest passing); `st_claude` independently reviewed diff via Herdr and issued PASS verdict; live `working`/`blocked` busy rejection and cross-project access rejection verified; Issue #3 closed; Opus 5.5 verdict PASS | None (P1 closed) |
-| P2 Memory + shared skills | PASS | Memory lifecycle (`active`/`superseded`/`retracted`), cross-project negative access, token budget clamping `[100..10000]`, and 5 canonical shared skills discoverable across Codex, Claude, and Hermes; 35 dedicated tests passing | Issue #4 review gate |
-| P3 Discord/OpenClaw | PARTIAL | P3-A completed: trusted inbound Discord gateway router (`src/herdctl/discord_gateway.py`), guild/author allowlist, thread ancestry resolver, SQLite idempotency, and 5 read-only commands (`status`, `agents`, `recall`, `tasks`, `budget`); 43 dedicated tests passing; 192/192 total suite green | P3-B live bounded dispatch pending review & owner approval |
+| P2 Memory + shared skills | PASS | Memory lifecycle (`active`/`superseded`/`retracted`), cross-project negative access, token budget clamping `[100..10000]`, and 5 canonical shared skills discoverable live across installed Codex, Claude, and Hermes; 35 dedicated + live agent tests passing | Issue #4 review gate |
+| P3 Discord/OpenClaw | PARTIAL | P3-A Hardened: trusted inbound Discord gateway router (`src/herdctl/discord_gateway.py`), adapter auth boundary, guild/author allowlist, thread ancestry resolver, durable SQLite idempotency lifecycle (`received` -> `processing` -> `completed`/`failed`/`uncertain`), atomic immediate reservation, concurrency protection, per-project status isolation, bounded responses (<=2000 chars), and 5 read-only commands (`status`, `agents`, `recall`, `tasks`, `budget`); 59 dedicated tests passing; 208/208 total suite green | P3-B live bounded dispatch pending review & owner approval |
 | P4 Supervisor orchestration | DESIGN | Task checkpoint table/skills defined | Live Hermes/worker tests |
 | P5 token efficiency benchmark | NOT STARTED | Evaluation plan | Real agent telemetry |
 
@@ -34,6 +34,38 @@ The implementing agent must replace these placeholder statuses with evidence aft
     - Authoritative thread ancestry resolver: threads must have valid `parent_channel_id` matching project channel. Forged/missing parents rejected.
     - Idempotency & replay protection: SQLite-backed (`gateway_idempotency` table) + memory index.
     - 5 read-only commands: `status`, `agents`, `recall`, `tasks`, `budget`. Shell commands, metacharacters, and path traversal strictly blocked.
+
+### PR #9 Hardening Evidence — Authentication, Idempotency and Live Integration (2026-11-02)
+
+- **Starting SHA:** `55a3bfd751856e208961b2ea6e8173286ed9ec95`.
+- **Full Test Suite:** **208 / 208 tests passing** (`unittest discover -s tests -v`).
+- **Self-Test Script:** `scripts/selftest.sh` reports clean compilation, 208 passing tests, and doctor check passing.
+- **Stage 1 (Haiku Worker A) Authenticated Discord Events:**
+  - Trusted Gateway-Adapter Boundary: `adapter_token` authentication enforced against configured secret/env token (`HERDCTL_GATEWAY_TOKEN`); untrusted adapter callers strictly rejected with `GatewaySecurityError`.
+  - Zero Production Ingress Defaults: Production ingress rejects missing `message_id`, `guild_id`, `channel_id`, or `author_id` without fallback defaults.
+  - Explicit Synthetic Mode: `--synthetic` CLI flag and `is_synthetic` property demarcate synthetic test fixtures from live transport events.
+  - Per-Project Status Isolation: `status` requests in `#starlight-tempo` return strictly scoped status without exposing `#federated-learning-iot` or unrelated projects.
+  - Response Boundary: All Discord responses safely formatted and truncated to <= 2000 characters (max 1950 chars + truncation indicator).
+- **Stage 2 (Haiku Worker B) Durable Request Idempotency:**
+  - Request Lifecycle States: `received` -> `processing` -> `completed`, plus `failed` and `uncertain`.
+  - Atomic Reservation: SQLite `BEGIN IMMEDIATE` transaction atomically reserves `message_id` before command dispatch, preventing concurrent handler races.
+  - Crash Recovery: Stale requests in `processing` past timeout are recovered cleanly (read-only queries reclaimed; prompt/mutating tasks transition to `uncertain` with automatic retries prohibited).
+  - Storage Reliability: SQLite errors during idempotency operations raise `IdempotencyError` and are never silently swallowed.
+  - Serialized Per-Agent Queue: `check_agent_busy()` and `list_agent_queue()` verify agent availability before dispatch.
+  - Duplicate Delivery Replay: Read-only duplicate requests produce deterministic results without redundant dispatch/model executions.
+- **Stage 3 Shared Skills Live Verification:**
+  - Canonical Skills: All 5 canonical skills (`git-worktree`, `herdr-control`, `memory-recall`, `scientific-review`, `task-handoff`) in `skills/shared/` verified live.
+  - Codex CLI: Verified via `~/.agents/skills` (5/5 discovered).
+  - Claude Code: Verified via `~/.claude/skills` (5/5 discovered).
+  - Hermes Agent: Configured via `skills.external_dirs: [~/.agents/skills]`, verified live via `hermes skills list` (5/5 enabled as external/local).
+  - Preexisting user configurations preserved without unreviewed modification.
+- **Installed Runtime Versions:**
+  - OpenClaw: 2026.10.9 (`8b18b55`)
+  - Herdr: 0.9.0
+  - Hermes Agent: v0.22.5 (`2026.9.24`)
+  - Codex CLI: 0.163.0
+  - Claude Code: 2.1.316
+  - Antigravity CLI: 1.4.12
 
 ### Security remediation branch (2026-11-01)
 

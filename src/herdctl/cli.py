@@ -36,6 +36,8 @@ def build_parser():
     gw.add_argument('--message-id')
     gw.add_argument('--content')
     gw.add_argument('--author-is-bot',action='store_true')
+    gw.add_argument('--adapter-token',help='Authentication token from trusted OpenClaw gateway adapter')
+    gw.add_argument('--synthetic',action='store_true',help='Explicitly mark request as synthetic test fixture')
     a=sub.add_parser('agents')
     a.add_argument('--project')
     a=sub.add_parser('launch')
@@ -119,23 +121,36 @@ def main(argv=None):
             from .discord_design import project_for_channel
             output(project_for_channel(cfg,args.channel_id,args.parent_channel_id))
         elif args.domain=='discord-gateway':
-            from .discord_gateway import DiscordGateway
-            gateway=DiscordGateway(root=root,cfg=cfg,cx=cx)
+            from .discord_gateway import DiscordGateway, GatewaySecurityError
+            gateway=DiscordGateway(root=root,cfg=cfg,cx=cx,adapter_token=args.adapter_token)
             if args.payload:
                 payload=json.loads(args.payload)
             else:
-                layout=gateway.layout
-                owners=layout.get('owner_user_ids') or []
                 payload={
-                    'message_id':args.message_id or '1566470000000000001',
-                    'guild_id':args.guild_id or layout.get('guild_id'),
+                    'message_id':args.message_id,
+                    'guild_id':args.guild_id,
                     'channel_id':args.channel_id,
                     'parent_channel_id':args.parent_channel_id,
-                    'author_id':args.author_id or (owners[0] if owners else None),
+                    'author_id':args.author_id,
                     'content':args.content or '',
                     'author_is_bot':args.author_is_bot,
                 }
-            res=gateway.handle_message(payload)
+            is_synthetic=bool(args.synthetic or payload.get('is_synthetic',False))
+            if not is_synthetic:
+                required=['message_id','guild_id','channel_id','author_id']
+                missing=[f for f in required if not payload.get(f)]
+                if missing:
+                    raise ConfigError(f"Missing required transport metadata: {', '.join(missing)}; defaults prohibited in production ingress")
+            else:
+                layout=gateway.layout
+                owners=layout.get('owner_user_ids') or []
+                payload.setdefault('message_id','1566470000000000001')
+                payload.setdefault('guild_id',layout.get('guild_id'))
+                payload.setdefault('author_id',owners[0] if owners else None)
+                payload['is_synthetic']=True
+
+            adapter_token=args.adapter_token or payload.get('adapter_token')
+            res=gateway.handle_message(payload,adapter_token=adapter_token,is_synthetic=is_synthetic)
             output(res)
             if not res.get('ok'):
                 return 1
