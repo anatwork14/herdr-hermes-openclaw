@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "description": "Soft operating targets, not hard provider output limits or paid quotas. Token counts for memory context are approximate.",
+  "roles": {
+    "gateway": {
+      "initial_memory_tokens": 0,
+      "followup_memory_tokens": 0,
+      "target_response_tokens": 250,
+      "terminal_read_lines": 0,
+      "skills": ["herdr-control"],
+      "rule": "Route by trusted Discord channel ID using deterministic commands. No research context or raw logs."
+    },
+    "supervisor": {
+      "initial_memory_tokens": 1600,
+      "followup_memory_tokens": 450,
+      "target_response_tokens": 800,
+      "terminal_read_lines": 60,
+      "skills": ["memory-recall", "task-handoff", "herdr-control"],
+      "rule": "Decompose work, use compact checkpoints and source pointers, not full transcripts."
+    },
+    "implementer": {
+      "initial_memory_tokens": 1200,
+      "followup_memory_tokens": 350,
+      "target_response_tokens": 1200,
+      "terminal_read_lines": 60,
+      "skills": ["git-worktree", "memory-recall"],
+      "rule": "Read source code locally. Ask for specific memory rather than dumping the project history."
+    },
+    "reviewer": {
+      "initial_memory_tokens": 1600,
+      "followup_memory_tokens": 400,
+      "target_response_tokens": 900,
+      "terminal_read_lines": 80,
+      "skills": ["scientific-review", "task-handoff", "memory-recall"],
+      "rule": "Review commit SHA/diff, test artifacts and acceptance criteria; never re-read implementation chat."
+    },
+    "explorer": {
+      "initial_memory_tokens": 1100,
+      "followup_memory_tokens": 300,
+      "target_response_tokens": 1000,
+      "terminal_read_lines": 60,
+      "skills": ["memory-recall"],
+      "rule": "Bound exploration to an explicit question, deliver links and findings, not open-ended search."
+    }
+  },
+  "execution": {
+    "max_initial_active_workers_per_project": 2,
+    "supervisor_only_when_needed": true,
+    "ask_before_paid_background_runs": true,
+    "emit_compact_checkpoint_on_task_transition": true,
+    "avoid_repeating_unchanged_memory": true,
+    "discord_log_policy": "Summary and evidence pointer only. Never paste raw terminal or secrets.",
+    "thread_expiration_policy": "Archive completed threads after operator review; memory retained by project, not by Discord history."
+  }
+}

@@ -1,0 +1,6 @@
+# Merge into ~/.hermes/config.yaml; don't overwrite existing models/providers.
+skills:
+  external_dirs:
+    - /ABS/PATH/herdr-agent-workspace/skills/shared
+# Keep memory providers optional. This project is source of truth for shared graph memory.
+# A Hermes external provider should only be added after verifying isolation and costs.
