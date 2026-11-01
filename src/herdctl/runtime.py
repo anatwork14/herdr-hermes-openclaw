@@ -122,7 +122,9 @@ def prompt_agent(cfg,cx, *, project:str,agent:str,text:str,yes:bool=False,wait:b
     live=verified_live_agent(cfg,binding)
     # Do not enqueue into working, blocked or unknown agents. Inspect them first.
     # Older builds may omit status, so actual schema still requires live testing.
-    state=live.get('status', live.get('state'))
+    state = live.get('agent_status')
+    if state is None:
+        state = live.get('status', live.get('state'))
     if state is not None and state not in ('idle','done'):
         raise RuntimeError_(f'Agent is not ready for a new prompt (state={state!r})')
     # Pane target avoids alias reassignment redirecting input to a different pane.

@@ -17,7 +17,7 @@ ALLOWED_TYPES = {"decision", "constraint", "fact", "experiment", "lesson", "task
 RELATIONS = {"DEPENDS_ON", "BLOCKED_BY", "SUPERSEDES", "USES", "VERIFIED_BY", "RELATED_TO", "PRODUCED_BY"}
 SECRET_PATTERNS = [re.compile(p, re.I) for p in [
     r"(?:api[_-]?key|password|secret|token)\s*[:=]\s*\S+",
-    r"-----BEGIN (?:OPENSSH|RSA|EC|PRIVATE) PRIVATE KEY-----",
+    r"-----BEGIN (?:[A-Z0-9_-]+ )?PRIVATE KEY(?: BLOCK)?-----",
     r"\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,})\b",
 ]]
 
@@ -153,6 +153,7 @@ def graph(cx: sqlite3.Connection, start: str, *, project: str | None, hops: int=
     if not root or not accessible(root, project) or root['status'] != 'active':
         raise MemoryError("Memory is not accessible or active")
     visited, q, edges = {start:dict(root)}, deque([(start,0)]), []
+    seen_edges = set()
     while q:
         node, depth = q.popleft()
         if depth >= hops: continue
@@ -160,7 +161,10 @@ def graph(cx: sqlite3.Connection, start: str, *, project: str | None, hops: int=
             nxt = edge['target'] if edge['source']==node else edge['source']
             row = cx.execute("SELECT * FROM memories WHERE id=?", (nxt,)).fetchone()
             if not row or not accessible(row, project) or row['status'] != 'active': continue
-            edges.append(dict(edge))
+            edge_key = (edge['source'], edge['relation'], edge['target'])
+            if edge_key not in seen_edges:
+                seen_edges.add(edge_key)
+                edges.append(dict(edge))
             if nxt not in visited:
                 visited[nxt]=dict(row)
                 q.append((nxt,depth+1))
