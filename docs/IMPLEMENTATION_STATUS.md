@@ -5,11 +5,11 @@
 
 | Gate | Status | Evidence | Unresolved |
 |---|---|---|---|
-| P0 offline control-plane | PASS (authoring environment) | 41 unittest cases green in the authoring copy; additional PR regression suite pending branch execution on host; Python 3.13 | Re-run on target server |
-| P1 Herdr + agent smoke test | BLOCKED | Requires actual Herdr server and authenticated CLIs | Host access |
-| P2 Memory + shared skills | PARTIAL | SQLite implementation exists; CLI + skill discovery require verification | Host config |
-| P3 Discord/OpenClaw | BLOCKED | Integration instructions provided | Bot token, IDs, gateway |
-| P4 Supervisor orchestration | DESIGN | Task checkpoint table/skills | Live Hermes/worker tests |
+| P0 offline control-plane | PASS | 112/112 unittest cases passing on target Linux host (Python 3.12.14); comprehensive concurrency, FTS5 injection, secret redaction, and Herdr 0.9.0 schema regression suites green | Independent Opus review pending |
+| P1 Herdr + agent smoke test | PARTIAL | Herdr 0.9.0 daemon running (`/mnt/ssd/genos2/.config/herdr/herdr.sock`); `st_codex` and `st_claude` workspaces created; offline contract verified; live prompt/read handoff offline tested | Owner-approved live execution tests |
+| P2 Memory + shared skills | PASS (offline) | SQLite WAL mode, FTS5 token sanitization, scoped isolation, graph deduplication, and secret redaction verified under 12-thread concurrency | Shared skill discovery live integration |
+| P3 Discord/OpenClaw | PARTIAL | OpenClaw Discord gateway running (task-758); real delivery to `#starlight-tempo`, `#federated-learning-iot`, and `#alerts` verified; channel ID allowlist enforced | Live incoming thread dispatch & owner approval adapter |
+| P4 Supervisor orchestration | DESIGN | Task checkpoint table/skills defined | Live Hermes/worker tests |
 | P5 token efficiency benchmark | NOT STARTED | Evaluation plan | Real agent telemetry |
 
 | Discord layout and credentials | DESIGN/TESTABLE OFFLINE | `herdctl discord-plan`, `docs/DISCORD_DESIGN.md`; no live bot | Create channels and verify gateway / owner allowlist |
@@ -20,4 +20,4 @@ The implementing agent must replace these placeholder statuses with evidence aft
 
 ### Security remediation branch (2026-11-01)
 
-A dedicated branch fixes four reproduced runtime/memory correctness defects and adds adversarial regression tests. The authoring copy passed **41 offline tests**, but this **does not verify real Herdr compatibility** or deployed Discord permissions. See [REMEDIATION_2026-11-01.md](REMEDIATION_2026-11-01.md). Pending: rerun full PR suite, independent Opus review, exact live Herdr API schema, safe owner-approved agent handoff and gateway integration. P1/P3/P4 remain **BLOCKED**.
+Branch `fix/agent-binding-and-memory-isolation` (PR #8, commit `381f20b316d8ab095b33b025e7f2bcce42c9cba0`) fixes four reproduced runtime/memory defects (H1, H2, M1, M2), resolves the live Herdr 0.9.0 `agent_status` schema mismatch, hardens PKCS#8/PGP secret redaction, deduplicates graph BFS traversals, and adds two concurrency/regression suites (`tests/test_memory_concurrency.py` and `tests/test_runtime_concurrency.py`). All **112 tests pass offline on target host** in 16.092s (`scripts/selftest.sh` verified clean). Review packet dispatched to Opus 5.5 Principal Reviewer. Production merge remains gated on independent review approval and owner authorization.
