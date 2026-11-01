@@ -30,9 +30,9 @@ class TestRuntime(unittest.TestCase):
             rt.prompt_agent(self.cfg,self.cx,project='starlight-tempo',agent='st_codex',text='hi',yes=True)
     @patch('herdctl.runtime.herdr')
     def test_prompt_sends_correct_cli(self, fake):
-        fake.side_effect=[{'result':{'agent':{'pane_id':'w1:p1'}}},{'ok':True}]
+        fake.side_effect=[{'result':{'agent':{'pane_id':'w1:p1'}}},{'ok':True},{'result':{'agent':{'pane_id':'w1:p1'}}}]
         rt.prompt_agent(self.cfg,self.cx,project='starlight-tempo',agent='st_codex',text='hello',yes=True)
-        self.assertEqual(fake.call_args.args[1],['agent','prompt','st_codex','hello'])
+        self.assertEqual(fake.call_args_list[1].args[1],['agent','prompt','w1:p1','hello'])
     @patch('herdctl.runtime.herdr')
     def test_unstructured_agent_get_denied(self, fake):
         fake.return_value='unknown output'
