@@ -679,26 +679,29 @@ class TestOpenClawDiscordAdapter(unittest.TestCase):
         """Model command allows inspecting active model and explicitly setting openrouter model."""
         from herdctl.discord_gateway import handle_model, CommandError
 
-        # Status inspection
-        info = handle_model("")
-        self.assertEqual(info["action"], "status")
-        self.assertIn("current_model", info)
-        self.assertIsInstance(info["popular_models"], list)
+        with tempfile.TemporaryDirectory() as td:
+            fake_cfg = Path(td) / "openclaw.json"
+            with patch.dict(os.environ, {"OPENCLAW_CONFIG_PATH": str(fake_cfg)}):
+                # Status inspection
+                info = handle_model("")
+                self.assertEqual(info["action"], "status")
+                self.assertIn("current_model", info)
+                self.assertIsInstance(info["popular_models"], list)
 
-        # Setting valid model
-        res = handle_model("anthropic/claude-3.5-sonnet")
-        self.assertEqual(res["action"], "set")
-        self.assertEqual(res["current_model"], "anthropic/claude-3.5-sonnet")
+                # Setting valid model
+                res = handle_model("anthropic/claude-3.5-sonnet")
+                self.assertEqual(res["action"], "set")
+                self.assertEqual(res["current_model"], "anthropic/claude-3.5-sonnet")
 
-        # Reverting to auto
-        res2 = handle_model("openrouter/auto")
-        self.assertEqual(res2["action"], "set")
-        self.assertEqual(res2["current_model"], "openrouter/auto")
+                # Reverting to auto
+                res2 = handle_model("openrouter/auto")
+                self.assertEqual(res2["action"], "set")
+                self.assertEqual(res2["current_model"], "openrouter/auto")
 
-        # Invalid model string rejected
-        with self.assertRaises(CommandError) as ctx:
-            handle_model("invalid model with spaces ; rm -rf")
-        self.assertIn("Invalid model identifier", str(ctx.exception))
+                # Invalid model string rejected
+                with self.assertRaises(CommandError) as ctx:
+                    handle_model("invalid model with spaces ; rm -rf")
+                self.assertIn("Invalid model identifier", str(ctx.exception))
 
 
 if __name__ == "__main__":

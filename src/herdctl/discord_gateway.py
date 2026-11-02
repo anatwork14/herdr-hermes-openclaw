@@ -1044,9 +1044,17 @@ POPULAR_OPENROUTER_MODELS = [
 ]
 
 
+def get_openclaw_config_path() -> Path:
+    """Return path to OpenClaw config file, supporting OPENCLAW_CONFIG_PATH override."""
+    env_path = os.environ.get("OPENCLAW_CONFIG_PATH")
+    if env_path and env_path.strip():
+        return Path(env_path).resolve()
+    return Path.home() / ".openclaw" / "openclaw.json"
+
+
 def get_openclaw_model() -> str:
     """Read the current default model from OpenClaw configuration."""
-    cfg_file = Path.home() / ".openclaw" / "openclaw.json"
+    cfg_file = get_openclaw_config_path()
     if cfg_file.exists():
         try:
             d = json.loads(cfg_file.read_text())
@@ -1062,14 +1070,19 @@ def get_openclaw_model() -> str:
 
 def set_openclaw_model(model_name: str) -> None:
     """Update OpenClaw configuration and trigger model registration."""
-    cfg_file = Path.home() / ".openclaw" / "openclaw.json"
-    if cfg_file.exists():
-        try:
-            d = json.loads(cfg_file.read_text())
-            d.setdefault("agents", {}).setdefault("defaults", {})["model"] = {"primary": model_name}
-            cfg_file.write_text(json.dumps(d, indent=2))
-        except Exception as e:
-            raise CommandError(f"Failed to update model in openclaw.json: {e}")
+    cfg_file = get_openclaw_config_path()
+    try:
+        cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        d = {}
+        if cfg_file.exists():
+            try:
+                d = json.loads(cfg_file.read_text())
+            except Exception:
+                d = {}
+        d.setdefault("agents", {}).setdefault("defaults", {})["model"] = {"primary": model_name}
+        cfg_file.write_text(json.dumps(d, indent=2))
+    except Exception as e:
+        raise CommandError(f"Failed to update model in openclaw.json: {e}")
     try:
         subprocess.run(
             ["openclaw", "models", "set", model_name],
