@@ -520,6 +520,161 @@ class TestStage2DurableRequestIdempotency(TestHardeningBase):
         self.assertFalse(res_dup["ok"])
         self.assertIn("Duplicate message ID", res_dup["error"])
 
+    def test_untrusted_synthetic_escalation_rejected(self):
+        """Untrusted payload attempting to pass is_synthetic=True is rejected in production ingress."""
+        malicious_payload = {
+            "message_id": "1566470000000099991",
+            "guild_id": "1556635278846992404",
+            "channel_id": "1566465715828031582",
+            "author_id": "734391788718129205",
+            "content": "status",
+            "is_synthetic": True,
+        }
+        with self.assertRaises(GatewaySecurityError) as ctx:
+            parse_inbound_message(malicious_payload, is_synthetic=False)
+        self.assertIn("Synthetic-mode escalation attempt in untrusted payload rejected", str(ctx.exception))
+
+    def test_production_mode_unconfigured_credential_fails_closed(self):
+        """Production ingress must fail closed on startup if server adapter credential is not configured."""
+        unconfigured_layout = {
+            "version": 1,
+            "guild_id": "1556635278846992404",
+            "owner_user_ids": ["734391788718129205"],
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(GatewaySecurityError) as ctx:
+                DiscordGateway(
+                    root=self.root,
+                    cfg=self.cfg,
+                    layout=unconfigured_layout,
+                    cx=self.cx,
+                    production=True,
+                )
+            self.assertIn("Production ingress requires configured gateway adapter credential", str(ctx.exception))
+
+    def test_conflicting_replay_altered_metadata_rejected(self):
+        """Replaying a message ID with altered parameters (command, channel, or author) raises IdempotencyError."""
+        mid = "1566470000000099992"
+        msg = self.make_valid_msg(content="status", message_id=mid)
+        res1 = self.gateway.handle_message(msg)
+        self.assertTrue(res1["ok"])
+
+        # Attempt replay with altered content / command
+        msg_tampered = self.make_valid_msg(content="recall note", message_id=mid)
+        res2 = self.gateway.handle_message(msg_tampered)
+        self.assertFalse(res2["ok"])
+        self.assertIn("Conflicting replay detected", res2["error"])
+
+    def test_atomic_agent_lease_contention_rejected(self):
+        """Atomic reservation prevents two concurrent requests from obtaining a lease on the same agent."""
+        store = self.gateway.idempotency
+        mid1 = "1566470000000099993"
+        mid2 = "1566470000000099994"
+
+        # Request 1 reserves agent
+        store.reserve_request(
+            message_id=mid1,
+            guild_id="1556635278846992404",
+            channel_id="1566467969033306122",
+            author_id="734391788718129205",
+            scope="project",
+            project="starlight-tempo",
+            command="prompt",
+            agent="st_codex",
+        )
+
+        # Request 2 targeting same agent must be rejected atomically
+        with self.assertRaises(IdempotencyError) as ctx:
+            store.reserve_request(
+                message_id=mid2,
+                guild_id="1556635278846992404",
+                channel_id="1566467969033306122",
+                author_id="734391788718129205",
+                scope="project",
+                project="starlight-tempo",
+                command="prompt",
+                agent="st_codex",
+            )
+        self.assertIn("is currently leased by dispatch", str(ctx.exception))
+
+
+class TestOpenClawDiscordAdapter(unittest.TestCase):
+    """Test suite for OpenClaw Discord Adapter metadata extraction and read-only boundary."""
+
+    def test_extract_valid_event_metadata(self):
+        """Authoritative metadata is extracted cleanly from OpenClaw Discord event structure."""
+        from integrations.openclaw.openclaw_discord_adapter import extract_event_metadata
+
+        event = {
+            "message": {
+                "id": "1566470000000099995",
+                "guild": {"id": "1556635278846992404"},
+                "channel": {
+                    "id": "1566467969033306122",
+                    "parentId": "1566465715828031582",
+                },
+                "author": {"id": "734391788718129205", "bot": False},
+                "content": "status",
+            }
+        }
+        meta = extract_event_metadata(event)
+        self.assertEqual(meta["message_id"], "1566470000000099995")
+        self.assertEqual(meta["guild_id"], "1556635278846992404")
+        self.assertEqual(meta["channel_id"], "1566467969033306122")
+        self.assertEqual(meta["parent_channel_id"], "1566465715828031582")
+        self.assertEqual(meta["author_id"], "734391788718129205")
+        self.assertFalse(meta["author_is_bot"])
+        self.assertEqual(meta["content"], "status")
+
+    def test_read_only_command_enforcement(self):
+        """Only read-only commands (status, agents, recall, tasks, budget) are allowed."""
+        from integrations.openclaw.openclaw_discord_adapter import (
+            OpenClawCommandError,
+            validate_read_only_command,
+        )
+
+        # Allowed read-only commands
+        for cmd in ["status", "/status", "agents", "recall fact", "tasks", "budget --role supervisor"]:
+            verb, args = validate_read_only_command(cmd)
+            self.assertIn(verb, {"status", "agents", "recall", "tasks", "budget"})
+
+        # Mutating and execution commands strictly forbidden
+        for bad_cmd in ["prompt st_codex do something", "launch explorer", "notify owner", "sh rm -rf", "exec ls"]:
+            with self.assertRaises(OpenClawCommandError) as ctx:
+                validate_read_only_command(bad_cmd)
+            self.assertTrue(
+                "mutating or execution operation" in str(ctx.exception)
+                or "Unsupported command" in str(ctx.exception)
+            )
+
+    def test_adapter_rejects_bots_and_synthetic_escalation(self):
+        """Adapter rejects bot authors and untrusted synthetic flags."""
+        from integrations.openclaw.openclaw_discord_adapter import (
+            OpenClawSecurityError,
+            extract_event_metadata,
+        )
+
+        bot_event = {
+            "id": "1566470000000099996",
+            "guild_id": "1556635278846992404",
+            "channel_id": "1566465715828031582",
+            "author": {"id": "1556635278846992499", "bot": True},
+            "content": "status",
+        }
+        with self.assertRaises(OpenClawSecurityError):
+            extract_event_metadata(bot_event)
+
+        synthetic_event = {
+            "id": "1566470000000099997",
+            "guild_id": "1556635278846992404",
+            "channel_id": "1566465715828031582",
+            "author_id": "734391788718129205",
+            "content": "status",
+            "is_synthetic": True,
+        }
+        with self.assertRaises(OpenClawSecurityError):
+            extract_event_metadata(synthetic_event)
+
 
 if __name__ == "__main__":
     unittest.main()

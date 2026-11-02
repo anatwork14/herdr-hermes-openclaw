@@ -8,7 +8,7 @@
 | P0 offline control-plane | PASS | 114/114 unittest cases passing on target Linux host; GitHub Actions CI quality gate passing; PR #8 merged into `main` via squash commit `e42174d812429fdf3ee99f809968aa23f20ca639`; Issue #2 closed; Opus 5.5 verdict PASS | None (P0 closed) |
 | P1 Herdr + agent smoke test | PASS | Live Herdr 0.9.0 two-agent handoff executed in workspace `w5` (`starlight-tempo`); `st_codex` implemented CPU utility `compute_tempo_error` and test `tests/test_p1_tempo_error.py` (commit `a5968492`, 5/5 pytest passing); `st_claude` independently reviewed diff via Herdr and issued PASS verdict; live `working`/`blocked` busy rejection and cross-project access rejection verified; Issue #3 closed; Opus 5.5 verdict PASS | None (P1 closed) |
 | P2 Memory + shared skills | PASS | Memory lifecycle (`active`/`superseded`/`retracted`), cross-project negative access, token budget clamping `[100..10000]`, and 5 canonical shared skills discoverable live across installed Codex, Claude, and Hermes; 35 dedicated + live agent tests passing | Issue #4 review gate |
-| P3 Discord/OpenClaw | PARTIAL | P3-A Hardened: trusted inbound Discord gateway router (`src/herdctl/discord_gateway.py`), adapter auth boundary, guild/author allowlist, thread ancestry resolver, durable SQLite idempotency lifecycle (`received` -> `processing` -> `completed`/`failed`/`uncertain`), atomic immediate reservation, concurrency protection, per-project status isolation, bounded responses (<=2000 chars), and 5 read-only commands (`status`, `agents`, `recall`, `tasks`, `budget`); 59 dedicated tests passing; 208/208 total suite green | P3-B live bounded dispatch pending review & owner approval |
+| P3 Discord/OpenClaw | READY FOR OWNER SMOKE TEST | P3-A Hardened: trusted inbound Discord gateway router (`src/herdctl/discord_gateway.py`), adapter auth boundary, guild/author allowlist, thread ancestry resolver, durable SQLite idempotency lifecycle (`received` -> `processing` -> `completed`/`failed`/`uncertain`), atomic immediate reservation, concurrency protection, agent lease fencing with monotonic generations, conflicting replay rejection, per-project status isolation, bounded responses (<=2000 chars), OpenClaw inbound adapter (`integrations/openclaw/openclaw_discord_adapter.py`) restricted to 5 read-only commands (`status`, `agents`, `recall`, `tasks`, `budget`); 215/215 total suite green | P3-B live bounded dispatch pending review & owner approval |
 | P4 Supervisor orchestration | DESIGN | Task checkpoint table/skills defined | Live Hermes/worker tests |
 | P5 token efficiency benchmark | NOT STARTED | Evaluation plan | Real agent telemetry |
 
@@ -87,3 +87,24 @@ Branch `fix/agent-binding-and-memory-isolation` (PR #8, commits `381f20b`, `7efc
   - Stale pane and drift detection: validated pre- and post-read.
   - Recovery without session corruption: rejection of unreviewed package install via `esc` cleanly transitioned `st_codex` back to interactive prompt.
 - **Task State Checkpoint:** Recorded `p1-smoke-handoff` as `done` in `.state/memory.sqlite3`.
+
+### PR #9 Final Security Gate and P3-A Live Readiness (2026-11-02)
+
+- **Total Test Suite:** **215 / 215 tests passing** across all modules.
+- **Worker A — Trusted Authentication Boundary:**
+  - Expected adapter credential strictly loaded from server-side configuration/environment (`HERDCTL_GATEWAY_TOKEN`, `HERDCTL_GATEWAY_SECRET`, or `layout['gateway_adapter']['auth_token']`). Callers cannot set or override expected secrets.
+  - Mandatory in production: `DiscordGateway(..., production=True)` immediately fails closed if server-side credential is missing.
+  - Production ingress strictly separates from synthetic testing: production `herdctl discord-gateway` rejects untrusted synthetic escalation (`"is_synthetic": true`); offline fixtures use dedicated `herdctl discord-gateway-test`.
+  - Authenticated thread ancestry: thread parent ID derived exclusively from trusted Discord transport metadata (`parent_channel_id` / `parentId`), verified against project mapping.
+- **Worker B — Idempotency and Dispatch Safety:**
+  - Full request lifecycle binding: binds message ID to `(guild_id, author_id, channel_id, parent_channel_id, project, command, arguments)`.
+  - Conflicting replay rejection: any attempt to replay a message ID with altered arguments, commands, or channels is rejected with `IdempotencyError`.
+  - Atomic reservation and agent lease acquisition: uses SQLite `BEGIN IMMEDIATE` transaction ensuring only one active dispatch leases an agent.
+  - Monotonic lease generation and stale session reconciliation: protects against concurrent dispatch races and agent collision.
+  - Conditional state transitions: transitions conditioned on `WHERE message_id = ? AND status = 'processing'`. Validation errors never mutate database records.
+- **Sonnet — OpenClaw Inbound Adapter:**
+  - Adapter implementation: `integrations/openclaw/openclaw_discord_adapter.py`.
+  - Enforces strict read-only boundary: permits ONLY `status`, `agents`, `recall`, `tasks`, and `budget`.
+  - Mutating or shell commands (`prompt`, `launch`, `notify`, `exec`, `sh`, `bash`) strictly rejected with `OpenClawCommandError`.
+  - Local authenticated execution: calls `herdctl discord-gateway` via authenticated local subprocess boundary using `HERDCTL_GATEWAY_TOKEN`.
+

@@ -1,10 +1,16 @@
-"""Trusted Discord inbound gateway router and read-only request handlers.
+"""Trusted Discord inbound gateway router, durable request idempotency, and agent lease safety.
 
-Enforces strict metadata validation (guild allowlist, author allowlist, bot rejection),
-trusted gateway adapter authentication boundary, authoritative channel/thread ancestry resolution,
-durable SQLite request idempotency lifecycle (received -> processing -> completed/failed/uncertain),
-and typed read-only handlers with hard project scoping boundaries.
-No arbitrary shell execution, prompt mutation, or unscoped cross-project access is permitted.
+Enforces:
+1. Trusted Authentication Boundary: Expected adapter credential loaded strictly from
+   server-side configuration/environment (never caller-supplied); mandatory in production;
+   synthetic escalation from untrusted payloads strictly rejected.
+2. Metadata Provenance & Channel Isolation: Direct project channel and trusted thread parent
+   ancestry verified; per-project status responses isolate peer projects.
+3. Durable Request Idempotency: Complete lifecycle (received -> processing -> completed/failed/uncertain);
+   binding integrity preventing conflicting replays on completed or processing requests;
+   atomic reservation with per-agent lease acquisition and monotonic generation fencing.
+4. Conditional State Transitions: Updates conditioned on current state and ownership;
+   validation failures never mutate existing requests.
 """
 from __future__ import annotations
 
@@ -39,7 +45,7 @@ class GatewayError(Exception):
 
 
 class GatewaySecurityError(GatewayError):
-    """Raised on security violation (unapproved guild, author, bot message, or untrusted adapter)."""
+    """Raised on security violation (unapproved guild, author, bot, or untrusted adapter)."""
     pass
 
 
@@ -49,7 +55,7 @@ class GatewayRoutingError(GatewayError):
 
 
 class IdempotencyError(GatewayError):
-    """Raised when duplicate message delivery, concurrency collision, or storage failure occurs."""
+    """Raised when duplicate message delivery, conflicting replay, concurrency collision, or storage failure occurs."""
     pass
 
 
@@ -73,6 +79,27 @@ class DiscordInboundMessage:
     is_synthetic: bool = False
 
 
+def load_server_adapter_token(root: Optional[Path], layout: dict) -> Optional[str]:
+    """Load expected adapter authentication credential strictly from server-side config/environment.
+    Callers cannot supply, override, or tamper with this expected secret via request payloads or CLI flags.
+    """
+    env_token = os.environ.get("HERDCTL_GATEWAY_SECRET") or os.environ.get("HERDCTL_GATEWAY_TOKEN")
+    if env_token and env_token.strip():
+        return env_token.strip()
+
+    adapter_cfg = layout.get("gateway_adapter")
+    if isinstance(adapter_cfg, dict):
+        tok = adapter_cfg.get("auth_token") or adapter_cfg.get("token")
+        if tok and str(tok).strip():
+            return str(tok).strip()
+
+    layout_tok = layout.get("adapter_token")
+    if layout_tok and str(layout_tok).strip():
+        return str(layout_tok).strip()
+
+    return None
+
+
 def parse_inbound_message(
     data: Union[dict, DiscordInboundMessage],
     is_synthetic: bool = False,
@@ -81,7 +108,7 @@ def parse_inbound_message(
     """Normalize raw payload dictionary or object into a typed DiscordInboundMessage.
 
     In production ingress path (not is_synthetic), transport metadata must be explicitly provided;
-    defaults are strictly prohibited.
+    defaults are strictly prohibited. Untrusted payloads attempting synthetic-mode escalation are rejected.
     """
     if isinstance(data, DiscordInboundMessage):
         if adapter_token and not data.adapter_token:
@@ -92,7 +119,11 @@ def parse_inbound_message(
     if not isinstance(data, dict):
         raise GatewaySecurityError("Inbound message payload must be a dict or DiscordInboundMessage")
 
-    syn = bool(is_synthetic or data.get("is_synthetic", False))
+    # Adversarial check: untrusted payload cannot activate synthetic mode
+    if data.get("is_synthetic") and not is_synthetic:
+        raise GatewaySecurityError("Synthetic-mode escalation attempt in untrusted payload rejected")
+
+    syn = bool(is_synthetic)
     tok = adapter_token or data.get("adapter_token")
 
     raw_author = data.get("author") or {}
@@ -145,11 +176,11 @@ def parse_inbound_message(
 
 
 class IdempotencyStore:
-    """Durable request lifecycle store in SQLite and memory.
+    """Durable request lifecycle and atomic agent lease store in SQLite and memory.
 
     Enforces states: received -> processing -> completed, with failed and uncertain states.
-    Prevents concurrent handlers from processing the same request using SQLite immediate transactions.
-    Supports crash recovery without automatic retry of ambiguous prompts.
+    Prevents conflicting replays, concurrent processing, and conflicting agent leases
+    using SQLite immediate transactions. Supports generation fencing and crash recovery.
     """
 
     def __init__(
@@ -172,6 +203,7 @@ class IdempotencyStore:
                         message_id TEXT PRIMARY KEY,
                         guild_id TEXT NOT NULL,
                         channel_id TEXT NOT NULL,
+                        parent_channel_id TEXT DEFAULT NULL,
                         author_id TEXT NOT NULL,
                         scope TEXT NOT NULL DEFAULT 'control',
                         project TEXT DEFAULT NULL,
@@ -181,15 +213,29 @@ class IdempotencyStore:
                         response_json TEXT DEFAULT NULL,
                         error TEXT DEFAULT NULL,
                         agent TEXT DEFAULT NULL,
+                        lease_generation INTEGER NOT NULL DEFAULT 0,
                         is_synthetic INTEGER NOT NULL DEFAULT 0,
                         created_at INTEGER NOT NULL,
                         updated_at INTEGER NOT NULL
                     )
                 """)
+                self.cx.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_leases (
+                        project TEXT NOT NULL,
+                        agent TEXT NOT NULL,
+                        message_id TEXT NOT NULL,
+                        lease_generation INTEGER NOT NULL DEFAULT 1,
+                        acquired_at INTEGER NOT NULL,
+                        expires_at INTEGER NOT NULL,
+                        PRIMARY KEY (project, agent)
+                    )
+                """)
+
                 # Handle schema migration if table existed with legacy columns
                 cursor = self.cx.execute("PRAGMA table_info(gateway_idempotency)")
                 existing_cols = {row[1] for row in cursor.fetchall()}
                 migrations = [
+                    ("parent_channel_id", "TEXT DEFAULT NULL"),
                     ("scope", "TEXT NOT NULL DEFAULT 'control'"),
                     ("project", "TEXT DEFAULT NULL"),
                     ("arguments", "TEXT NOT NULL DEFAULT ''"),
@@ -197,6 +243,7 @@ class IdempotencyStore:
                     ("response_json", "TEXT DEFAULT NULL"),
                     ("error", "TEXT DEFAULT NULL"),
                     ("agent", "TEXT DEFAULT NULL"),
+                    ("lease_generation", "INTEGER NOT NULL DEFAULT 0"),
                     ("is_synthetic", "INTEGER NOT NULL DEFAULT 0"),
                     ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
                 ]
@@ -245,6 +292,7 @@ class IdempotencyStore:
         scope: str = "control",
         project: Optional[str] = None,
         arguments: str = "",
+        parent_channel_id: Optional[str] = None,
         status: str = "completed",
         response_data: Optional[Dict[str, Any]] = None,
         response_text: Optional[str] = None,
@@ -265,14 +313,14 @@ class IdempotencyStore:
                     self.cx.execute(
                         """
                         INSERT INTO gateway_idempotency (
-                            message_id, guild_id, channel_id, author_id, scope, project,
-                            command, arguments, status, response_json, agent, is_synthetic,
+                            message_id, guild_id, channel_id, parent_channel_id, author_id, scope, project,
+                            command, arguments, status, response_json, agent, lease_generation, is_synthetic,
                             created_at, updated_at
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
-                            message_id, guild_id, channel_id, author_id, scope, project,
-                            command, arguments, status, resp_json, agent, 1 if is_synthetic else 0,
+                            message_id, guild_id, channel_id, parent_channel_id, author_id, scope, project,
+                            command, arguments, status, resp_json, agent, 0, 1 if is_synthetic else 0,
                             now, now
                         )
                     )
@@ -289,14 +337,18 @@ class IdempotencyStore:
         project: Optional[str],
         command: str,
         arguments: str = "",
+        parent_channel_id: Optional[str] = None,
         agent: Optional[str] = None,
         is_synthetic: bool = False,
         timeout_seconds: Optional[float] = None,
+        lease_duration: float = 60.0,
     ) -> Tuple[str, Optional[Dict[str, Any]]]:
-        """Atomically reserve message ID in SQLite before dispatch.
+        """Atomically reserve message ID and acquire per-agent lease in SQLite before dispatch.
 
-        Enforces lifecycle states: received -> processing -> completed.
-        Prevents concurrent handlers from processing the same request.
+        Enforces:
+        1. Conflicting Replay Rejection: Message ID is strictly bound to original transport metadata.
+        2. Per-Agent Lease Lock: Only one active dispatch owns an agent; lease generation is fenced.
+        3. Lifecycle States: received -> processing -> completed / failed / uncertain.
         """
         if not message_id:
             raise IdempotencyError("Missing message ID for idempotency reservation")
@@ -317,18 +369,57 @@ class IdempotencyStore:
                 (message_id,)
             ).fetchone()
 
+            lease_gen = 0
+            # If agent specified, verify/acquire atomic agent lease
+            if agent is not None and project is not None:
+                lease_row = self.cx.execute(
+                    "SELECT * FROM agent_leases WHERE project = ? AND agent = ?",
+                    (project, agent)
+                ).fetchone()
+
+                if lease_row is not None:
+                    lease = dict(lease_row)
+                    if lease["expires_at"] > now:
+                        if lease["message_id"] != message_id:
+                            self.cx.rollback()
+                            raise IdempotencyError(
+                                f"Agent {agent} in project {project} is currently leased by dispatch {lease['message_id']} "
+                                f"(generation {lease['lease_generation']})"
+                            )
+                        lease_gen = lease["lease_generation"]
+                    else:
+                        # Stale lease reconciliation with monotonic generation increment
+                        lease_gen = lease["lease_generation"] + 1
+                        self.cx.execute(
+                            """
+                            UPDATE agent_leases 
+                            SET message_id = ?, lease_generation = ?, acquired_at = ?, expires_at = ?
+                            WHERE project = ? AND agent = ?
+                            """,
+                            (message_id, lease_gen, now, now + int(lease_duration), project, agent)
+                        )
+                else:
+                    lease_gen = 1
+                    self.cx.execute(
+                        """
+                        INSERT INTO agent_leases (project, agent, message_id, lease_generation, acquired_at, expires_at)
+                        VALUES (?, ?, ?, 1, ?, ?)
+                        """,
+                        (project, agent, message_id, now, now + int(lease_duration))
+                    )
+
             if row is None:
                 self.cx.execute(
                     """
                     INSERT INTO gateway_idempotency (
-                        message_id, guild_id, channel_id, author_id, scope, project,
-                        command, arguments, status, agent, is_synthetic,
+                        message_id, guild_id, channel_id, parent_channel_id, author_id, scope, project,
+                        command, arguments, status, agent, lease_generation, is_synthetic,
                         created_at, updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
-                        message_id, guild_id, channel_id, author_id, scope, project,
-                        command, arguments, "processing", agent, 1 if is_synthetic else 0,
+                        message_id, guild_id, channel_id, parent_channel_id, author_id, scope, project,
+                        command, arguments, "processing", agent, lease_gen, 1 if is_synthetic else 0,
                         now, now
                     )
                 )
@@ -336,20 +427,47 @@ class IdempotencyStore:
                 self._seen.add(message_id)
                 return "processing", None
 
-            record = dict(row)
-            status = record.get("status")
-            updated_at = record.get("updated_at", record.get("created_at", 0))
+            # Binding integrity check: reject conflicting replays on existing message ID
+            orig = dict(row)
+            mismatches = []
+            if str(orig.get("guild_id") or "") != str(guild_id or ""):
+                mismatches.append("guild_id")
+            if str(orig.get("channel_id") or "") != str(channel_id or ""):
+                mismatches.append("channel_id")
+            orig_parent = str(orig.get("parent_channel_id") or "").strip() or None
+            new_parent = str(parent_channel_id or "").strip() or None
+            if orig_parent != new_parent:
+                mismatches.append("parent_channel_id")
+            if str(orig.get("author_id") or "") != str(author_id or ""):
+                mismatches.append("author_id")
+            orig_proj = str(orig.get("project") or "").strip() or None
+            new_proj = str(project or "").strip() or None
+            if orig_proj != new_proj:
+                mismatches.append("project")
+            if str(orig.get("command") or "").lower() != str(command or "").lower():
+                mismatches.append("command")
+            if str(orig.get("arguments") or "").strip() != str(arguments or "").strip():
+                mismatches.append("arguments")
+
+            if mismatches:
+                self.cx.rollback()
+                raise IdempotencyError(
+                    f"Conflicting replay detected for message {message_id}: metadata mismatch on {', '.join(mismatches)}"
+                )
+
+            status = orig.get("status")
+            updated_at = orig.get("updated_at", orig.get("created_at", 0))
             elapsed = now - updated_at
 
             if status == "completed":
                 self.cx.commit()
                 self._seen.add(message_id)
-                return "completed", record
+                return "completed", orig
 
             if status == "processing":
                 if elapsed > t_limit:
                     if command in ALLOWED_COMMANDS:
-                        # Crash recovery for read-only handler
+                        # Crash recovery for read-only handler: reclaim reservation
                         self.cx.execute(
                             "UPDATE gateway_idempotency SET status = 'processing', updated_at = ? WHERE message_id = ?",
                             (now, message_id)
@@ -358,7 +476,7 @@ class IdempotencyStore:
                         self._seen.add(message_id)
                         return "processing", None
                     else:
-                        # Crash recovery for prompt or mutating task: mark uncertain, do NOT auto-retry!
+                        # Ambiguous timeout during mutating / prompt operation: mark uncertain, NO auto-retry!
                         self.cx.execute(
                             """
                             UPDATE gateway_idempotency 
@@ -383,7 +501,7 @@ class IdempotencyStore:
 
             if status == "failed":
                 self.cx.commit()
-                raise IdempotencyError(f"Request {message_id} previously failed: {record.get('error')}")
+                raise IdempotencyError(f"Request {message_id} previously failed: {orig.get('error')}")
 
             self.cx.commit()
             return "processing", None
@@ -400,21 +518,32 @@ class IdempotencyStore:
         message_id: str,
         response_data: Any,
         response_text: str,
+        project: Optional[str] = None,
+        agent: Optional[str] = None,
     ) -> None:
-        """Mark request as completed and persist serialized response."""
+        """Mark request as completed, persist serialized response, and conditionally release agent lease."""
         self._seen.add(message_id)
         if self.cx is not None:
             now = int(time.time())
             resp_json = json.dumps({"data": response_data, "text": response_text}, ensure_ascii=False)
             try:
                 with self.cx:
-                    self.cx.execute(
+                    # Conditional update: only transitions if currently 'processing'
+                    cursor = self.cx.execute(
                         """
                         UPDATE gateway_idempotency 
                         SET status = 'completed', response_json = ?, updated_at = ?
-                        WHERE message_id = ?
+                        WHERE message_id = ? AND status = 'processing'
                         """,
                         (resp_json, now, message_id)
+                    )
+                    if cursor.rowcount == 0:
+                        raise IdempotencyError(
+                            f"Conditional state transition to 'completed' failed: request {message_id} is not in 'processing' state"
+                        )
+                    self.cx.execute(
+                        "DELETE FROM agent_leases WHERE message_id = ?",
+                        (message_id,)
                     )
             except sqlite3.Error as exc:
                 raise IdempotencyError(f"Database error completing request {message_id}: {exc}") from exc
@@ -424,20 +553,30 @@ class IdempotencyStore:
         message_id: str,
         error_msg: str,
         is_uncertain: bool = False,
+        project: Optional[str] = None,
+        agent: Optional[str] = None,
     ) -> None:
-        """Mark request as failed or uncertain."""
+        """Mark request as failed or uncertain, conditioned on current processing state."""
         if self.cx is not None:
             now = int(time.time())
             st = "uncertain" if is_uncertain else "failed"
             try:
                 with self.cx:
-                    self.cx.execute(
+                    cursor = self.cx.execute(
                         """
                         UPDATE gateway_idempotency 
                         SET status = ?, error = ?, updated_at = ?
-                        WHERE message_id = ?
+                        WHERE message_id = ? AND status = 'processing'
                         """,
                         (st, error_msg, now, message_id)
+                    )
+                    if cursor.rowcount == 0:
+                        raise IdempotencyError(
+                            f"Conditional state transition to '{st}' failed: request {message_id} is not in 'processing' state"
+                        )
+                    self.cx.execute(
+                        "DELETE FROM agent_leases WHERE message_id = ?",
+                        (message_id,)
                     )
             except sqlite3.Error as exc:
                 raise IdempotencyError(f"Database error updating failure state for {message_id}: {exc}") from exc
@@ -448,14 +587,25 @@ class IdempotencyStore:
         agent: str,
         timeout_seconds: Optional[float] = None,
     ) -> Optional[str]:
-        """Check if an agent currently has an active 'processing' request.
+        """Check if an agent currently has an active lease or active 'processing' request.
         Returns active message_id if busy, None if idle.
         """
         if self.cx is None:
             return None
         now = int(time.time())
-        t_limit = timeout_seconds if timeout_seconds is not None else self.processing_timeout_seconds
         try:
+            # First check agent_leases table
+            lease_row = self.cx.execute(
+                "SELECT message_id, expires_at FROM agent_leases WHERE project = ? AND agent = ?",
+                (project, agent)
+            ).fetchone()
+            if lease_row:
+                mid, exp = lease_row[0], lease_row[1]
+                if exp > now:
+                    return mid
+
+            # Fallback check gateway_idempotency
+            t_limit = timeout_seconds if timeout_seconds is not None else self.processing_timeout_seconds
             row = self.cx.execute(
                 """
                 SELECT message_id, updated_at FROM gateway_idempotency 
@@ -492,6 +642,39 @@ class IdempotencyStore:
             return [dict(r) for r in rows]
         except sqlite3.Error as exc:
             raise IdempotencyError(f"Database error listing agent queue: {exc}") from exc
+
+    def reconcile_stale_leases(self) -> int:
+        """Scan and clear expired agent leases, transitioning uncompleted requests to UNCERTAIN."""
+        if self.cx is None:
+            return 0
+        now = int(time.time())
+        reconciled = 0
+        try:
+            with self.cx:
+                rows = self.cx.execute(
+                    "SELECT project, agent, message_id, lease_generation FROM agent_leases WHERE expires_at <= ?",
+                    (now,)
+                ).fetchall()
+                for r in rows:
+                    p, a, mid, lgen = r[0], r[1], r[2], r[3]
+                    self.cx.execute(
+                        """
+                        UPDATE gateway_idempotency 
+                        SET status = 'uncertain', 
+                            error = 'Lease expired without completion; session reconciled',
+                            updated_at = ?
+                        WHERE message_id = ? AND status = 'processing'
+                        """,
+                        (now, mid)
+                    )
+                    self.cx.execute(
+                        "DELETE FROM agent_leases WHERE project = ? AND agent = ? AND message_id = ?",
+                        (p, a, mid)
+                    )
+                    reconciled += 1
+            return reconciled
+        except sqlite3.Error as exc:
+            raise IdempotencyError(f"Database error during stale lease reconciliation: {exc}") from exc
 
     def get_record(self, message_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve full idempotency record by message ID."""
@@ -571,13 +754,16 @@ def validate_metadata(
     layout: dict,
     message: DiscordInboundMessage,
     expected_adapter_token: Optional[str] = None,
+    production: bool = False,
 ) -> None:
     """Validate inbound metadata against trusted transport metadata, adapter boundary, and allowlists."""
     if message.author_is_bot:
         raise GatewaySecurityError("Bot messages are prohibited; refusing to process")
 
     # Adapter caller verification for production ingress
-    if not message.is_synthetic and expected_adapter_token:
+    if production or (not message.is_synthetic and expected_adapter_token is not None):
+        if not expected_adapter_token:
+            raise GatewaySecurityError("Production ingress requires configured gateway adapter credential; unconfigured gateway is prohibited")
         if not message.adapter_token or message.adapter_token != expected_adapter_token:
             raise GatewaySecurityError("Untrusted gateway adapter caller; invalid or missing adapter authentication")
 
@@ -929,7 +1115,7 @@ class DiscordGateway:
         cfg: Optional[dict] = None,
         layout: Optional[dict] = None,
         cx: Optional[sqlite3.Connection] = None,
-        adapter_token: Optional[str] = None,
+        production: bool = False,
         processing_timeout_seconds: float = 60.0,
     ):
         if root is not None:
@@ -964,17 +1150,24 @@ class DiscordGateway:
             db_path = state_dir / "memory.sqlite3"
             self.cx = connection(db_path)
 
-        self.adapter_token = (
-            adapter_token
-            or os.environ.get("HERDCTL_GATEWAY_TOKEN")
-            or self.layout.get("gateway_adapter", {}).get("auth_token")
-            or self.layout.get("adapter_token")
-        )
+        self.production = production
+        # Expected credential is loaded strictly from server configuration/environment
+        self.expected_adapter_token = load_server_adapter_token(self.root, self.layout)
+        if self.production and not self.expected_adapter_token:
+            raise GatewaySecurityError(
+                "Production ingress requires configured gateway adapter credential; unconfigured gateway is prohibited"
+            )
+
         self.idempotency = IdempotencyStore(self.cx, processing_timeout_seconds=processing_timeout_seconds)
 
     def validate_metadata(self, message: DiscordInboundMessage) -> None:
         """Validate inbound Discord message metadata."""
-        validate_metadata(self.layout, message, expected_adapter_token=self.adapter_token)
+        validate_metadata(
+            self.layout,
+            message,
+            expected_adapter_token=self.expected_adapter_token,
+            production=self.production,
+        )
 
     def resolve_channel(
         self,
@@ -1026,10 +1219,11 @@ class DiscordGateway:
         cmd = ""
         args = ""
         routing: Optional[Dict[str, Any]] = None
+        reserved_by_current_turn = False
 
         try:
             tok = adapter_token or getattr(message, "adapter_token", None) or (message.get("adapter_token") if isinstance(message, dict) else None)
-            syn = is_synthetic or getattr(message, "is_synthetic", False) or (bool(message.get("is_synthetic")) if isinstance(message, dict) else False)
+            syn = is_synthetic or getattr(message, "is_synthetic", False)
             msg = parse_inbound_message(message, is_synthetic=syn, adapter_token=tok)
 
             # Step 1: Validate trusted metadata and adapter caller authentication
@@ -1046,6 +1240,7 @@ class DiscordGateway:
                 message_id=msg.message_id,
                 guild_id=msg.guild_id,
                 channel_id=msg.channel_id,
+                parent_channel_id=msg.parent_channel_id,
                 author_id=msg.author_id,
                 scope=routing["scope"],
                 project=routing["project"],
@@ -1073,13 +1268,15 @@ class DiscordGateway:
                     }
                 raise IdempotencyError(f"Duplicate message ID: {msg.message_id} already processed")
 
+            reserved_by_current_turn = True
+
             # Step 5: Dispatch to scoped handler
             result_data = self.dispatch(cmd, args, routing["scope"], routing["project"])
 
             text_resp = format_discord_response(cmd, routing["scope"], routing["project"], result_data)
 
             # Step 6: Mark request as completed in SQLite
-            self.idempotency.complete_request(msg.message_id, result_data, text_resp)
+            self.idempotency.complete_request(msg.message_id, result_data, text_resp, project=routing["project"])
 
             return {
                 "ok": True,
@@ -1095,9 +1292,14 @@ class DiscordGateway:
             }
 
         except Exception as exc:
-            if msg and msg.message_id and not isinstance(exc, IdempotencyError):
+            # Only record failure if the current execution held the active reservation
+            if reserved_by_current_turn and msg and msg.message_id and not isinstance(exc, IdempotencyError):
                 try:
-                    self.idempotency.fail_request(msg.message_id, sanitize_error(exc))
+                    self.idempotency.fail_request(
+                        msg.message_id,
+                        sanitize_error(exc),
+                        project=routing.get("project") if routing else None,
+                    )
                 except Exception:
                     pass
 

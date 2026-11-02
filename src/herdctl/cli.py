@@ -27,7 +27,7 @@ def build_parser():
     a=sub.add_parser('project-for-channel')
     a.add_argument('channel_id',help='Trusted Discord channel/thread ID from gateway metadata')
     a.add_argument('--parent-channel-id',help='Trusted parent ID from Discord thread metadata (never message content)')
-    gw=sub.add_parser('discord-gateway',help='Process trusted inbound Discord gateway message')
+    gw=sub.add_parser('discord-gateway',help='Process authenticated inbound Discord gateway message')
     gw.add_argument('--payload',help='JSON string containing message payload')
     gw.add_argument('--channel-id')
     gw.add_argument('--parent-channel-id')
@@ -36,8 +36,18 @@ def build_parser():
     gw.add_argument('--message-id')
     gw.add_argument('--content')
     gw.add_argument('--author-is-bot',action='store_true')
-    gw.add_argument('--adapter-token',help='Authentication token from trusted OpenClaw gateway adapter')
-    gw.add_argument('--synthetic',action='store_true',help='Explicitly mark request as synthetic test fixture')
+    gw.add_argument('--adapter-token',help='Authentication token presented by trusted OpenClaw gateway adapter')
+    gwt=sub.add_parser('discord-gateway-test',help='Test entry point for offline synthetic gateway fixtures')
+    gwt.add_argument('--payload',help='JSON string containing test payload')
+    gwt.add_argument('--channel-id')
+    gwt.add_argument('--parent-channel-id')
+    gwt.add_argument('--guild-id')
+    gwt.add_argument('--author-id')
+    gwt.add_argument('--message-id')
+    gwt.add_argument('--content')
+    gwt.add_argument('--author-is-bot',action='store_true')
+    gwt.add_argument('--adapter-token')
+    gwt.add_argument('--synthetic',action='store_true',default=True,help='Mark request as synthetic test fixture')
     a=sub.add_parser('agents')
     a.add_argument('--project')
     a=sub.add_parser('launch')
@@ -122,7 +132,7 @@ def main(argv=None):
             output(project_for_channel(cfg,args.channel_id,args.parent_channel_id))
         elif args.domain=='discord-gateway':
             from .discord_gateway import DiscordGateway, GatewaySecurityError
-            gateway=DiscordGateway(root=root,cfg=cfg,cx=cx,adapter_token=args.adapter_token)
+            gateway=DiscordGateway(root=root,cfg=cfg,cx=cx,production=True)
             if args.payload:
                 payload=json.loads(args.payload)
             else:
@@ -135,22 +145,40 @@ def main(argv=None):
                     'content':args.content or '',
                     'author_is_bot':args.author_is_bot,
                 }
-            is_synthetic=bool(args.synthetic or payload.get('is_synthetic',False))
-            if not is_synthetic:
-                required=['message_id','guild_id','channel_id','author_id']
-                missing=[f for f in required if not payload.get(f)]
-                if missing:
-                    raise ConfigError(f"Missing required transport metadata: {', '.join(missing)}; defaults prohibited in production ingress")
+            if payload.get('is_synthetic'):
+                raise GatewaySecurityError("Synthetic escalation is prohibited in production ingress. Use 'discord-gateway-test' for offline synthetic testing.")
+            required=['message_id','guild_id','channel_id','author_id']
+            missing=[f for f in required if not payload.get(f)]
+            if missing:
+                raise ConfigError(f"Missing required transport metadata: {', '.join(missing)}; defaults prohibited in production ingress")
+            adapter_token=args.adapter_token or payload.get('adapter_token') or os.environ.get("HERDCTL_GATEWAY_TOKEN") or os.environ.get("HERDCTL_GATEWAY_SECRET")
+            res=gateway.handle_message(payload,adapter_token=adapter_token,is_synthetic=False)
+            output(res)
+            if not res.get('ok'):
+                return 1
+        elif args.domain=='discord-gateway-test':
+            from .discord_gateway import DiscordGateway
+            gateway=DiscordGateway(root=root,cfg=cfg,cx=cx,production=False)
+            if args.payload:
+                payload=json.loads(args.payload)
             else:
-                layout=gateway.layout
-                owners=layout.get('owner_user_ids') or []
-                payload.setdefault('message_id','1566470000000000001')
-                payload.setdefault('guild_id',layout.get('guild_id'))
-                payload.setdefault('author_id',owners[0] if owners else None)
-                payload['is_synthetic']=True
-
+                payload={
+                    'message_id':args.message_id,
+                    'guild_id':args.guild_id,
+                    'channel_id':args.channel_id,
+                    'parent_channel_id':args.parent_channel_id,
+                    'author_id':args.author_id,
+                    'content':args.content or '',
+                    'author_is_bot':args.author_is_bot,
+                }
+            layout=gateway.layout
+            owners=layout.get('owner_user_ids') or []
+            payload.setdefault('message_id','1566470000000000001')
+            payload.setdefault('guild_id',layout.get('guild_id'))
+            payload.setdefault('author_id',owners[0] if owners else None)
+            payload['is_synthetic']=True
             adapter_token=args.adapter_token or payload.get('adapter_token')
-            res=gateway.handle_message(payload,adapter_token=adapter_token,is_synthetic=is_synthetic)
+            res=gateway.handle_message(payload,adapter_token=adapter_token,is_synthetic=True)
             output(res)
             if not res.get('ok'):
                 return 1

@@ -3,6 +3,10 @@
   "bot_name": "ResearchOps",
   "guild_id": "",
   "owner_user_ids": [],
+  "gateway_adapter": {
+    "auth_token": "",
+    "socket_path": ".state/gateway.sock"
+  },
   "control_channels": {
     "agent-control": {
       "channel_id": "",
