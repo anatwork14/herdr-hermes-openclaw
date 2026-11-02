@@ -27,6 +27,27 @@ def build_parser():
     a=sub.add_parser('project-for-channel')
     a.add_argument('channel_id',help='Trusted Discord channel/thread ID from gateway metadata')
     a.add_argument('--parent-channel-id',help='Trusted parent ID from Discord thread metadata (never message content)')
+    gw=sub.add_parser('discord-gateway',help='Process authenticated inbound Discord gateway message')
+    gw.add_argument('--payload',help='JSON string containing message payload')
+    gw.add_argument('--channel-id')
+    gw.add_argument('--parent-channel-id')
+    gw.add_argument('--guild-id')
+    gw.add_argument('--author-id')
+    gw.add_argument('--message-id')
+    gw.add_argument('--content')
+    gw.add_argument('--author-is-bot',action='store_true')
+    gw.add_argument('--adapter-token',help='Authentication token presented by trusted OpenClaw gateway adapter')
+    gwt=sub.add_parser('discord-gateway-test',help='Test entry point for offline synthetic gateway fixtures')
+    gwt.add_argument('--payload',help='JSON string containing test payload')
+    gwt.add_argument('--channel-id')
+    gwt.add_argument('--parent-channel-id')
+    gwt.add_argument('--guild-id')
+    gwt.add_argument('--author-id')
+    gwt.add_argument('--message-id')
+    gwt.add_argument('--content')
+    gwt.add_argument('--author-is-bot',action='store_true')
+    gwt.add_argument('--adapter-token')
+    gwt.add_argument('--synthetic',action='store_true',default=True,help='Mark request as synthetic test fixture')
     a=sub.add_parser('agents')
     a.add_argument('--project')
     a=sub.add_parser('launch')
@@ -57,10 +78,14 @@ def build_parser():
     a=ms.add_parser('search')
     a.add_argument('--project'); a.add_argument('--global-only',action='store_true')
     a.add_argument('query'); a.add_argument('--limit',type=int,default=8)
+    a.add_argument('--status',choices=['active','superseded','retracted','all'],default='active')
+    a.add_argument('--include-retired',action='store_true')
     a=ms.add_parser('link')
     a.add_argument('--project'); a.add_argument('source'); a.add_argument('relation'); a.add_argument('target')
     a=ms.add_parser('graph')
     a.add_argument('--project'); a.add_argument('id'); a.add_argument('--hops',type=int,default=2)
+    a.add_argument('--status',choices=['active','superseded','retracted','all'],default='active')
+    a.add_argument('--include-retired',action='store_true')
     a=ms.add_parser('context')
     a.add_argument('--project',required=True); a.add_argument('query'); a.add_argument('--budget',type=int)
     a=ms.add_parser('list')
@@ -105,6 +130,58 @@ def main(argv=None):
         elif args.domain=='project-for-channel':
             from .discord_design import project_for_channel
             output(project_for_channel(cfg,args.channel_id,args.parent_channel_id))
+        elif args.domain=='discord-gateway':
+            from .discord_gateway import DiscordGateway, GatewaySecurityError
+            gateway=DiscordGateway(root=root,cfg=cfg,cx=cx,production=True)
+            if args.payload:
+                payload=json.loads(args.payload)
+            else:
+                payload={
+                    'message_id':args.message_id,
+                    'guild_id':args.guild_id,
+                    'channel_id':args.channel_id,
+                    'parent_channel_id':args.parent_channel_id,
+                    'author_id':args.author_id,
+                    'content':args.content or '',
+                    'author_is_bot':args.author_is_bot,
+                }
+            if payload.get('is_synthetic'):
+                raise GatewaySecurityError("Synthetic escalation is prohibited in production ingress. Use 'discord-gateway-test' for offline synthetic testing.")
+            required=['message_id','guild_id','channel_id','author_id']
+            missing=[f for f in required if not payload.get(f)]
+            if missing:
+                raise ConfigError(f"Missing required transport metadata: {', '.join(missing)}; defaults prohibited in production ingress")
+            adapter_token=args.adapter_token or payload.get('adapter_token') or os.environ.get("HERDCTL_GATEWAY_TOKEN") or os.environ.get("HERDCTL_GATEWAY_SECRET")
+            res=gateway.handle_message(payload,adapter_token=adapter_token,is_synthetic=False)
+            output(res)
+            if not res.get('ok'):
+                return 1
+        elif args.domain=='discord-gateway-test':
+            from .discord_gateway import DiscordGateway
+            gateway=DiscordGateway(root=root,cfg=cfg,cx=cx,production=False)
+            if args.payload:
+                payload=json.loads(args.payload)
+            else:
+                payload={
+                    'message_id':args.message_id,
+                    'guild_id':args.guild_id,
+                    'channel_id':args.channel_id,
+                    'parent_channel_id':args.parent_channel_id,
+                    'author_id':args.author_id,
+                    'content':args.content or '',
+                    'author_is_bot':args.author_is_bot,
+                }
+            layout=gateway.layout
+            owners=layout.get('owner_user_ids') or []
+            payload.setdefault('message_id','1566470000000000001')
+            payload.setdefault('guild_id',layout.get('guild_id'))
+            payload.setdefault('author_id',owners[0] if owners else None)
+            payload['is_synthetic']=True
+            adapter_token=args.adapter_token or payload.get('adapter_token')
+            res=gateway.handle_message(payload,adapter_token=adapter_token,is_synthetic=True)
+            output(res)
+            if not res.get('ok'):
+                return 1
         elif args.domain=='agents':
             rows=cx.execute('SELECT * FROM bindings WHERE project=? ORDER BY name',(args.project,)).fetchall() if args.project else cx.execute('SELECT * FROM bindings ORDER BY project,name').fetchall()
             output([dict(x) for x in rows])
@@ -126,20 +203,21 @@ def main(argv=None):
                      subject=args.subject,content=args.content,evidence=args.evidence)})
             elif args.operation=='retire':
                 if not args.yes: raise ConfigError('Retiring memory requires --yes')
-                row=cx.execute('SELECT * FROM memories WHERE id=?',(args.id,)).fetchone()
-                if not row or not mem.accessible(row,args.project):
-                    raise ConfigError('Memory is not accessible')
-                if row['scope']=='global' and args.project is not None:
-                    raise ConfigError('Global retirement requires global-only operator context')
-                with cx: cx.execute('UPDATE memories SET status=?, updated_at=strftime("%s","now") WHERE id=?',(args.status,args.id))
+                try:
+                    mem.retire(cx, args.id, args.status, project=args.project)
+                except mem.MemoryError as exc:
+                    raise ConfigError(str(exc)) from exc
                 output({'ok':True,'id':args.id,'status':args.status})
             elif args.operation=='search':
-                output(mem.search(cx,args.query,project=args.project,limit=args.limit,global_only=args.global_only))
+                output(mem.search(cx,args.query,project=args.project,limit=args.limit,
+                                  global_only=args.global_only,status=args.status,
+                                  include_retired=args.include_retired))
             elif args.operation=='link':
                 mem.link(cx,args.source,args.relation,args.target,args.project)
                 output({'ok':True})
             elif args.operation=='graph':
-                output(mem.graph(cx,args.id,project=args.project,hops=args.hops))
+                output(mem.graph(cx,args.id,project=args.project,hops=args.hops,
+                                 status=args.status,include_retired=args.include_retired))
             elif args.operation=='context':
                 output(mem.context(cx,project=args.project,query=args.query,budget=args.budget or cfg['default_memory_budget']))
             elif args.operation=='list':

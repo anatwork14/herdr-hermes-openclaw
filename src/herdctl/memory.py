@@ -108,26 +108,69 @@ def accessible(row: sqlite3.Row, project: str | None, *, global_only=False) -> b
     return row['scope'] == 'global' or (project is not None and row['scope'] == 'project' and row['project'] == project)
 
 def search(cx: sqlite3.Connection, query: str, *, project: str | None, limit: int = 8,
-           global_only: bool = False) -> list[dict]:
+           global_only: bool = False,
+           status: str | list[str] | tuple[str, ...] | set[str] | None = 'active',
+           include_retired: bool = False) -> list[dict]:
     # FTS tokenization rather than SQL concatenation; no SQL injection, punctuation-safe.
     tokens = re.findall(r"[\w-]+", query, re.UNICODE)
     if not tokens:
         return []
     fts = ' OR '.join('"' + t.replace('"', '') + '"' for t in tokens[:12])
+
+    if include_retired or status in ('all', None):
+        status_predicate = "1=1"
+        status_params = []
+    elif isinstance(status, (list, tuple, set)):
+        valid_statuses = [s for s in status if s in ('active', 'superseded', 'retracted')]
+        if not valid_statuses:
+            return []
+        placeholders = ','.join('?' for _ in valid_statuses)
+        status_predicate = f"m.status IN ({placeholders})"
+        status_params = list(valid_statuses)
+    elif status in ('active', 'superseded', 'retracted'):
+        status_predicate = "m.status = ?"
+        status_params = [status]
+    else:
+        raise MemoryError(f"Invalid status: {status}")
+
+    clamped_limit = max(1, min(limit, 50))
     # Filter scope in SQL before FTS rank/LIMIT. Python post-filtering can
     # exclude valid global records when project hits fill the top results.
     if global_only or project is None:
         scope_predicate = "m.scope='global'"
-        params = (fts, max(1, min(limit, 50)))
+        sql = f"""SELECT m.*, bm25(memory_fts) AS rank FROM memory_fts
+          JOIN memories m ON m.rowid = memory_fts.rowid
+          WHERE memory_fts MATCH ? AND {status_predicate}
+          AND {scope_predicate}
+          ORDER BY rank LIMIT ?"""
+        params = (fts, *status_params, clamped_limit)
     else:
         scope_predicate = "(m.scope='global' OR (m.scope='project' AND m.project=?))"
-        params = (fts, project, max(1, min(limit, 50)))
-    rows = cx.execute(f"""SELECT m.*, bm25(memory_fts) AS rank FROM memory_fts
-      JOIN memories m ON m.rowid = memory_fts.rowid
-      WHERE memory_fts MATCH ? AND m.status='active'
-      AND {scope_predicate}
-      ORDER BY rank LIMIT ?""", params).fetchall()
+        sql = f"""SELECT m.*, bm25(memory_fts) AS rank FROM memory_fts
+          JOIN memories m ON m.rowid = memory_fts.rowid
+          WHERE memory_fts MATCH ? AND {status_predicate}
+          AND {scope_predicate}
+          ORDER BY rank LIMIT ?"""
+        params = (fts, *status_params, project, clamped_limit)
+    rows = cx.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+def set_status(cx: sqlite3.Connection, mid: str, status: str, *, project: str | None = None) -> None:
+    if status not in ('active', 'superseded', 'retracted'):
+        raise MemoryError(f"Invalid status: {status}")
+    row = cx.execute("SELECT * FROM memories WHERE id=?", (mid,)).fetchone()
+    if not row or not accessible(row, project):
+        raise MemoryError("Memory is not accessible")
+    if row['scope'] == 'global' and project is not None:
+        raise MemoryError("Global status change requires global-only operator context")
+    now = int(time.time())
+    with cx:
+        cx.execute("UPDATE memories SET status=?, updated_at=? WHERE id=?", (status, now, mid))
+
+def retire(cx: sqlite3.Connection, mid: str, status: str, *, project: str | None = None) -> None:
+    if status not in ('superseded', 'retracted'):
+        raise MemoryError("Retire status must be 'superseded' or 'retracted'")
+    set_status(cx, mid, status, project=project)
 
 def link(cx: sqlite3.Connection, source: str, relation: str, target: str, project: str | None):
     if relation not in RELATIONS:
@@ -146,33 +189,53 @@ def link(cx: sqlite3.Connection, source: str, relation: str, target: str, projec
     with cx:
         cx.execute("INSERT OR IGNORE INTO edges VALUES (?,?,?)", (source,relation,target))
 
-def graph(cx: sqlite3.Connection, start: str, *, project: str | None, hops: int=2) -> dict:
+def graph(cx: sqlite3.Connection, start: str, *, project: str | None, hops: int = 2,
+          status: str | list[str] | tuple[str, ...] | set[str] | None = 'active',
+          include_retired: bool = False) -> dict:
     if hops < 0 or hops > 3:
         raise MemoryError("Traversal limited to 0–3 hops")
+    if include_retired or status in ('all', None):
+        allowed_statuses = {'active', 'superseded', 'retracted'}
+    elif isinstance(status, (list, tuple, set)):
+        allowed_statuses = set(status) & {'active', 'superseded', 'retracted'}
+        if not allowed_statuses:
+            raise MemoryError("No valid statuses specified")
+    elif status in ('active', 'superseded', 'retracted'):
+        allowed_statuses = {status}
+    else:
+        raise MemoryError(f"Invalid status: {status}")
+
     root = cx.execute("SELECT * FROM memories WHERE id=?", (start,)).fetchone()
-    if not root or not accessible(root, project) or root['status'] != 'active':
+    if not root or not accessible(root, project) or root['status'] not in allowed_statuses:
         raise MemoryError("Memory is not accessible or active")
-    visited, q, edges = {start:dict(root)}, deque([(start,0)]), []
+    visited, q, edges = {start: dict(root)}, deque([(start, 0)]), []
     seen_edges = set()
     while q:
         node, depth = q.popleft()
-        if depth >= hops: continue
-        for edge in cx.execute("SELECT * FROM edges WHERE source=? OR target=?", (node,node)).fetchall():
-            nxt = edge['target'] if edge['source']==node else edge['source']
+        if depth >= hops:
+            continue
+        for edge in cx.execute("SELECT * FROM edges WHERE source=? OR target=?", (node, node)).fetchall():
+            nxt = edge['target'] if edge['source'] == node else edge['source']
             row = cx.execute("SELECT * FROM memories WHERE id=?", (nxt,)).fetchone()
-            if not row or not accessible(row, project) or row['status'] != 'active': continue
+            if not row or not accessible(row, project) or row['status'] not in allowed_statuses:
+                continue
             edge_key = (edge['source'], edge['relation'], edge['target'])
             if edge_key not in seen_edges:
                 seen_edges.add(edge_key)
                 edges.append(dict(edge))
             if nxt not in visited:
-                visited[nxt]=dict(row)
-                q.append((nxt,depth+1))
-    return {'nodes':list(visited.values()),'edges':edges}
+                visited[nxt] = dict(row)
+                q.append((nxt, depth + 1))
+    return {'nodes': list(visited.values()), 'edges': edges}
 
-def context(cx: sqlite3.Connection, *, project: str, query: str, budget: int=1600,
-            limit: int=20) -> dict:
-    if budget < 100 or budget > 12000:
+def clamp_budget(budget: int, min_budget: int = 100, max_budget: int = 10000) -> int:
+    return max(min_budget, min(budget, max_budget))
+
+def context(cx: sqlite3.Connection, *, project: str, query: str, budget: int = 1600,
+            limit: int = 20, clamp: bool = False) -> dict:
+    if clamp:
+        budget = clamp_budget(budget, 100, 10000)
+    elif budget < 100 or budget > 12000:
         raise MemoryError("Context budget must be 100–12000 tokens")
     results = search(cx, query, project=project, limit=limit)
     # Approximate token bound; deliberately conservatively allocate 4 chars/token.
@@ -183,22 +246,28 @@ def context(cx: sqlite3.Connection, *, project: str, query: str, budget: int=160
         line = f"[{r['id']}] ({r['scope']}/{r['type']}) {r['subject']}: {r['content']} [evidence: {r['evidence']}]"
         if used + len(line) + 1 > max_chars:
             continue
-        lines.append(line); used += len(line)+1
-    return {'text':'\n'.join(lines), 'records':len(lines), 'estimated_tokens_upper_bound':(used+3)//4,
-            'budget_tokens':budget,'query':query,'project':project}
+        lines.append(line)
+        used += len(line) + 1
+    return {'text': '\n'.join(lines), 'records': len(lines), 'estimated_tokens_upper_bound': (used + 3) // 4,
+            'budget_tokens': budget, 'query': query, 'project': project}
 
-def task_upsert(cx:sqlite3.Connection, task_id:str, project:str, title:str, status:str,
-                agent:str='', evidence:str=''):
-    if status not in {'queued','working','blocked','review','done','failed'}:
+def task_upsert(cx: sqlite3.Connection, task_id: str, project: str, title: str, status: str,
+                agent: str = '', evidence: str = '') -> None:
+    if status not in {'queued', 'working', 'blocked', 'review', 'done', 'failed'}:
         raise MemoryError('Invalid task status')
+    safe_text(task_id)
+    safe_text(project)
     safe_text(title)
-    if agent: safe_text(agent)
-    if evidence: safe_text(evidence)
+    if agent:
+        safe_text(agent)
+    if evidence:
+        safe_text(evidence)
     with cx:
         cx.execute("""INSERT INTO task_state(id,project,title,status,agent,evidence,updated_at)
           VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
           title=excluded.title,status=excluded.status,agent=excluded.agent,
           evidence=excluded.evidence,updated_at=excluded.updated_at
-          WHERE task_state.project=excluded.project""",(task_id,project,title,status,agent,evidence,int(time.time())))
-        if cx.execute("SELECT project FROM task_state WHERE id=?",(task_id,)).fetchone()['project']!=project:
+          WHERE task_state.project=excluded.project""", (task_id, project, title, status, agent, evidence, int(time.time())))
+        row = cx.execute("SELECT project FROM task_state WHERE id=?", (task_id,)).fetchone()
+        if not row or row['project'] != project:
             raise MemoryError('Task already belongs to another project')
