@@ -1031,17 +1031,22 @@ def handle_budget(
 
 SAFE_MODEL_RE = re.compile(r"^[a-zA-Z0-9_\-\.\:\/]+$")
 
-POPULAR_OPENROUTER_MODELS = [
-    ("openrouter/auto", "Auto router (default, best price/performance)"),
-    ("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet (best coding & reasoning)"),
-    ("anthropic/claude-3.5-haiku", "Claude 3.5 Haiku (ultra fast & responsive)"),
-    ("openai/gpt-4o", "GPT-4o (multimodal flagship)"),
-    ("openai/gpt-4o-mini", "GPT-4o mini (fast & lightweight)"),
-    ("deepseek/deepseek-chat", "DeepSeek V3 (high capability, economical)"),
-    ("deepseek/deepseek-r1", "DeepSeek R1 (reasoning & thinking model)"),
-    ("google/gemini-2.0-flash-exp:free", "Gemini 2.0 Flash (free / low latency)"),
-    ("meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B Instruct (open flagship)"),
+BUDGET_MODELS_UNDER_1_DOLLAR = [
+    ("deepseek/deepseek-chat", "DeepSeek V3", "$0.28 / 1M", "SOTA reasoning & coding at 1/10th the cost of GPT-4o"),
+    ("openai/gpt-4o-mini", "GPT-4o Mini", "$0.60 / 1M", "Fast, reliable tool calling and structured outputs"),
+    ("qwen/qwen-2.5-coder-32b-instruct", "Qwen 2.5 Coder 32B", "$0.16 / 1M", "Specialized coding powerhouse, passes tough SWE benchmarks"),
+    ("meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B", "$0.30 / 1M", "Open flagship, rivals GPT-4 level intelligence"),
+    ("mistralai/mistral-small-24b-instruct-2501", "Mistral Small 24B", "$0.30 / 1M", "Fast low-latency European open model"),
+    ("google/gemini-2.0-flash-exp:free", "Gemini 2.0 Flash", "FREE ($0.00)", "High speed multimodal experimental model"),
 ]
+
+FRONTIER_MODELS = [
+    ("openrouter/auto", "Auto Router", "Dynamic", "Automatically picks best provider/rate"),
+    ("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet", "$15.00 / 1M", "Top coding benchmark champion"),
+    ("deepseek/deepseek-r1", "DeepSeek R1", "$2.19 / 1M", "Chain-of-thought deep reasoning"),
+]
+
+POPULAR_OPENROUTER_MODELS = BUDGET_MODELS_UNDER_1_DOLLAR + FRONTIER_MODELS
 
 
 def get_openclaw_config_path() -> Path:
@@ -1100,10 +1105,19 @@ def handle_model(args: str) -> Dict[str, Any]:
     model_arg = args.strip()
     current = get_openclaw_model()
 
+    if model_arg.lower() in ("cheap", "budget", "under1", "lowcost"):
+        return {
+            "action": "cheap",
+            "current_model": current,
+            "budget_models": BUDGET_MODELS_UNDER_1_DOLLAR,
+        }
+
     if not model_arg or model_arg.lower() in ("list", "status", "show", "help"):
         return {
             "action": "status",
             "current_model": current,
+            "budget_models": BUDGET_MODELS_UNDER_1_DOLLAR,
+            "frontier_models": FRONTIER_MODELS,
             "popular_models": POPULAR_OPENROUTER_MODELS,
         }
 
@@ -1195,19 +1209,38 @@ def format_discord_response(
                 f"• Previous Model: `{data.get('previous_model')}`\n"
                 f"• OpenClaw gateway routing has been updated."
             )
+        elif data.get("action") == "cheap":
+            lines = [
+                f"**💸 Top OpenRouter Models (< $1 / Million Output Tokens)**",
+                f"• Active Model: `{data.get('current_model')}`",
+                "",
+            ]
+            for mid, name, cost, desc in data.get("budget_models", []):
+                active_flag = " ⭐ *(active)*" if mid == data.get("current_model") else ""
+                lines.append(f"• `{mid}`{active_flag}\n  **Cost:** ~{cost} out | **Notes:** {desc}")
+            lines.append("")
+            lines.append("**To select one, type:** `model <model_id>`")
+            lines.append("*(e.g. `model deepseek/deepseek-chat` or `model openai/gpt-4o-mini`)*")
+            result = "\n".join(lines)
         else:
             lines = [
                 f"**OpenRouter Model Settings**",
                 f"• Active Model: `{data.get('current_model')}`",
                 "",
-                "**Popular Models to Choose From:**",
+                "**💸 Top Models Under $1 / 1M Output Tokens:**",
             ]
-            for mid, desc in data.get("popular_models", []):
+            for mid, name, cost, desc in data.get("budget_models", []):
                 active_flag = " ⭐ *(active)*" if mid == data.get("current_model") else ""
-                lines.append(f"• `{mid}`{active_flag}\n  _{desc}_")
+                lines.append(f"• `{mid}`{active_flag} (~{cost} out) - {desc}")
             lines.append("")
-            lines.append("**To switch models, type:**")
-            lines.append("`model <model_id>`  *(e.g. `model anthropic/claude-3.5-sonnet`)*")
+            lines.append("**🚀 Frontier Models:**",)
+            for mid, name, cost, desc in data.get("frontier_models", []):
+                active_flag = " ⭐ *(active)*" if mid == data.get("current_model") else ""
+                lines.append(f"• `{mid}`{active_flag} (~{cost} out) - {desc}")
+            lines.append("")
+            lines.append("**Commands:**")
+            lines.append("• `model cheap` — View detailed pricing for models under $1/1M")
+            lines.append("• `model <model_id>` — Switch active model (e.g. `model deepseek/deepseek-chat`)")
             result = "\n".join(lines)
     else:
         result = sanitize_text(json.dumps(data, indent=2))
