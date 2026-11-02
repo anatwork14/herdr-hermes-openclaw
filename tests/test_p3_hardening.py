@@ -634,9 +634,9 @@ class TestOpenClawDiscordAdapter(unittest.TestCase):
         )
 
         # Allowed read-only commands
-        for cmd in ["status", "/status", "agents", "recall fact", "tasks", "budget --role supervisor"]:
+        for cmd in ["status", "/status", "agents", "recall fact", "tasks", "budget --role supervisor", "model", "model anthropic/claude-3.5-sonnet"]:
             verb, args = validate_read_only_command(cmd)
-            self.assertIn(verb, {"status", "agents", "recall", "tasks", "budget"})
+            self.assertIn(verb, {"status", "agents", "recall", "tasks", "budget", "model", "models"})
 
         # Mutating and execution commands strictly forbidden
         for bad_cmd in ["prompt st_codex do something", "launch explorer", "notify owner", "sh rm -rf", "exec ls"]:
@@ -674,6 +674,31 @@ class TestOpenClawDiscordAdapter(unittest.TestCase):
         }
         with self.assertRaises(OpenClawSecurityError):
             extract_event_metadata(synthetic_event)
+
+    def test_model_command_inspection_and_setting(self):
+        """Model command allows inspecting active model and explicitly setting openrouter model."""
+        from herdctl.discord_gateway import handle_model, CommandError
+
+        # Status inspection
+        info = handle_model("")
+        self.assertEqual(info["action"], "status")
+        self.assertIn("current_model", info)
+        self.assertIsInstance(info["popular_models"], list)
+
+        # Setting valid model
+        res = handle_model("anthropic/claude-3.5-sonnet")
+        self.assertEqual(res["action"], "set")
+        self.assertEqual(res["current_model"], "anthropic/claude-3.5-sonnet")
+
+        # Reverting to auto
+        res2 = handle_model("openrouter/auto")
+        self.assertEqual(res2["action"], "set")
+        self.assertEqual(res2["current_model"], "openrouter/auto")
+
+        # Invalid model string rejected
+        with self.assertRaises(CommandError) as ctx:
+            handle_model("invalid model with spaces ; rm -rf")
+        self.assertIn("Invalid model identifier", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ import subprocess
 import sys
 from typing import Any, Dict, Optional, Tuple
 
-ALLOWED_READ_ONLY_COMMANDS = frozenset({"status", "agents", "recall", "tasks", "budget"})
+ALLOWED_READ_ONLY_COMMANDS = frozenset({"status", "agents", "recall", "tasks", "budget", "model", "models"})
 DISALLOWED_MUTATING_COMMANDS = frozenset({"prompt", "launch", "notify", "exec", "sh", "bash", "eval"})
 
 SNOWFLAKE_RE = re.compile(r"^\d{17,21}$")

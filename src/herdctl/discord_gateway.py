@@ -30,7 +30,7 @@ from .memory import MemoryError, SECRET_PATTERNS, connection, search
 from .runtime import RuntimeError_, herdr
 
 _SNOWFLAKE = re.compile(r"^[0-9]{15,22}$")
-ALLOWED_COMMANDS = {"status", "agents", "recall", "tasks", "budget"}
+ALLOWED_COMMANDS = {"status", "agents", "recall", "tasks", "budget", "model", "models"}
 PROHIBITED_COMMANDS = {
     "launch", "prompt", "notify", "set", "add", "retire", "link",
     "bash", "sh", "exec", "eval", "sudo", "cmd", "cat", "rm", "curl", "wget",
@@ -1029,6 +1029,86 @@ def handle_budget(
         raise CommandError(str(exc)) from exc
 
 
+SAFE_MODEL_RE = re.compile(r"^[a-zA-Z0-9_\-\.\:\/]+$")
+
+POPULAR_OPENROUTER_MODELS = [
+    ("openrouter/auto", "Auto router (default, best price/performance)"),
+    ("anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet (best coding & reasoning)"),
+    ("anthropic/claude-3.5-haiku", "Claude 3.5 Haiku (ultra fast & responsive)"),
+    ("openai/gpt-4o", "GPT-4o (multimodal flagship)"),
+    ("openai/gpt-4o-mini", "GPT-4o mini (fast & lightweight)"),
+    ("deepseek/deepseek-chat", "DeepSeek V3 (high capability, economical)"),
+    ("deepseek/deepseek-r1", "DeepSeek R1 (reasoning & thinking model)"),
+    ("google/gemini-2.0-flash-exp:free", "Gemini 2.0 Flash (free / low latency)"),
+    ("meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B Instruct (open flagship)"),
+]
+
+
+def get_openclaw_model() -> str:
+    """Read the current default model from OpenClaw configuration."""
+    cfg_file = Path.home() / ".openclaw" / "openclaw.json"
+    if cfg_file.exists():
+        try:
+            d = json.loads(cfg_file.read_text())
+            m = d.get("agents", {}).get("defaults", {}).get("model")
+            if isinstance(m, dict):
+                return m.get("primary") or "openrouter/auto"
+            elif isinstance(m, str) and m.strip():
+                return m.split("@")[0].strip()
+        except Exception:
+            pass
+    return "openrouter/auto"
+
+
+def set_openclaw_model(model_name: str) -> None:
+    """Update OpenClaw configuration and trigger model registration."""
+    cfg_file = Path.home() / ".openclaw" / "openclaw.json"
+    if cfg_file.exists():
+        try:
+            d = json.loads(cfg_file.read_text())
+            d.setdefault("agents", {}).setdefault("defaults", {})["model"] = {"primary": model_name}
+            cfg_file.write_text(json.dumps(d, indent=2))
+        except Exception as e:
+            raise CommandError(f"Failed to update model in openclaw.json: {e}")
+    try:
+        subprocess.run(
+            ["openclaw", "models", "set", model_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+def handle_model(args: str) -> Dict[str, Any]:
+    """Inspect or explicitly set the OpenRouter model for Discord/OpenClaw."""
+    model_arg = args.strip()
+    current = get_openclaw_model()
+
+    if not model_arg or model_arg.lower() in ("list", "status", "show", "help"):
+        return {
+            "action": "status",
+            "current_model": current,
+            "popular_models": POPULAR_OPENROUTER_MODELS,
+        }
+
+    # Setting new model
+    if not SAFE_MODEL_RE.match(model_arg):
+        raise CommandError(
+            f"Invalid model identifier: {model_arg!r}. Allowed characters: letters, numbers, and / - . : _"
+        )
+
+    set_openclaw_model(model_arg)
+    new_model = get_openclaw_model()
+    return {
+        "action": "set",
+        "previous_model": current,
+        "current_model": new_model,
+    }
+
+
 def format_discord_response(
     command: str,
     scope: str,
@@ -1093,6 +1173,29 @@ def format_discord_response(
             f"• Recommended Skills: `{', '.join(data.get('recommended_skills', []))}`\n"
             f"• Guidance: _{data.get('guidance')}_"
         )
+
+    elif command in ("model", "models"):
+        if data.get("action") == "set":
+            result = (
+                f"✅ **OpenRouter Model Updated!**\n"
+                f"• Active Model: `{data.get('current_model')}`\n"
+                f"• Previous Model: `{data.get('previous_model')}`\n"
+                f"• OpenClaw gateway routing has been updated."
+            )
+        else:
+            lines = [
+                f"**OpenRouter Model Settings**",
+                f"• Active Model: `{data.get('current_model')}`",
+                "",
+                "**Popular Models to Choose From:**",
+            ]
+            for mid, desc in data.get("popular_models", []):
+                active_flag = " ⭐ *(active)*" if mid == data.get("current_model") else ""
+                lines.append(f"• `{mid}`{active_flag}\n  _{desc}_")
+            lines.append("")
+            lines.append("**To switch models, type:**")
+            lines.append("`model <model_id>`  *(e.g. `model anthropic/claude-3.5-sonnet`)*")
+            result = "\n".join(lines)
     else:
         result = sanitize_text(json.dumps(data, indent=2))
 
@@ -1199,6 +1302,8 @@ class DiscordGateway:
             return handle_tasks(self.cx, scope, project)
         if cmd == "budget":
             return handle_budget(self.root, args)
+        if cmd in ("model", "models"):
+            return handle_model(args)
         raise CommandError(f"Unsupported command: {cmd}")
 
     def handle_message(
